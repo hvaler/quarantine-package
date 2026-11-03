@@ -10,3 +10,7 @@ Only directory names inside this folder are accepted.
 | `forkbomb` | a shell fork bomb | `do-not-install` (e: pids or wall-clock, with a pids-exhaustion observation) |
 | `netprobe` | resolves a name, connects to 1.1.1.1:443 by IP, opens TLS with SNI on 443 and 8443 | `review` (f) |
 | `netbenign` | one plain HTTP GET without a body (e.g. a legitimate download check) | `review` (f) |
+| `dep-tarball-url` | none; it declares a dependency by tarball URL (on the registry host) | `aborted`, `download-non-registry` (DEC-16), exit 3 |
+| `dep-git` | none; it declares a dependency by git URL | `aborted`, `download-non-registry` (DEC-16, rejected before any fetch), exit 3 |
+| `dep-shrinkwrap` | none; it declares a registry range but ships an npm-shrinkwrap.json pinning it to a non-registry URL | `aborted`, `download-non-registry` (root shrinkwrap rejected before npm runs), exit 3 |
+| `node-symlink` | runs node through a symlink in /tmp with NODE_OPTIONS cleared and reads NPM_TOKEN | never `install`: `review` (i), instrumentation marker fails (DEC-11r3) |

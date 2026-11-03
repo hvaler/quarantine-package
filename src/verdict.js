@@ -78,6 +78,10 @@ const RULES = Object.freeze([
 
 const TIERS = ['do-not-install', 'review'];
 
+// DEC-11 markers (plus paths-resolved). `install` needs each one present AND ok:
+// an absent marker is treated exactly like a failed one (DEC-11r2).
+const REQUIRED_MARKERS = Object.freeze(['instrumentation-heartbeat', 'paths-resolved', 'kernel-trace', 'sinkhole-log', 'ended-normally', 'harness-ran']);
+
 // decide({ observations }) -> { verdict, rules: [{ id, tier, text, observationIds }] }
 // `install` requires that no rule fired AND a successful load observation exists
 // AND every completeness observation is ok (absent markers are added by the caller).
@@ -91,6 +95,13 @@ function decide(input, rules = RULES) {
   if (!observations.some((o) => o.kind === 'load')) {
     fired.push({ id: 'h', tier: 'review', text: rules.find((r) => r.id === 'h')?.text || 'no load observation', observationIds: [] });
   }
+  const present = new Set(observations.filter((o) => o.kind === 'completeness').map((o) => o.marker));
+  const absent = REQUIRED_MARKERS.filter((m) => !present.has(m));
+  if (absent.length) {
+    const i = fired.find((r) => r.id === 'i');
+    if (i) i.missingMarkers = absent;
+    else fired.push({ id: 'i', tier: 'review', text: rules.find((r) => r.id === 'i')?.text || 'observation incomplete', observationIds: [], missingMarkers: absent });
+  }
   let verdict = 'install';
   for (const tier of TIERS) {
     if (fired.some((r) => r.tier === tier)) { verdict = tier; break; }
@@ -98,4 +109,4 @@ function decide(input, rules = RULES) {
   return { verdict, rules: fired };
 }
 
-module.exports = { decide, RULES, KEY_LIKE, HOME, DOCKER_SOCKETS, CREDENTIAL_PATHS };
+module.exports = { decide, RULES, REQUIRED_MARKERS, KEY_LIKE, HOME, DOCKER_SOCKETS, CREDENTIAL_PATHS };

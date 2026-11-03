@@ -23,7 +23,7 @@ function clean() {
     write('/work/node_modules/express/.cache', 'package'),
     tcp('registry.npmjs.org', 'npm', false),
     loadOk(),
-    marker('instrumentation-heartbeat', true), marker('kernel-trace', true), marker('sinkhole-log', true),
+    marker('instrumentation-heartbeat', true), marker('paths-resolved', true), marker('kernel-trace', true), marker('sinkhole-log', true),
     marker('ended-normally', true), marker('harness-ran', true),
   ];
 }
@@ -38,9 +38,13 @@ function hostile() {
     dns('recolector.example.com'),
     tcp('recolector.example.com', 'package', true),
     loadOk(),
-    marker('instrumentation-heartbeat', true), marker('kernel-trace', true), marker('sinkhole-log', true),
+    marker('instrumentation-heartbeat', true), marker('paths-resolved', true), marker('kernel-trace', true), marker('sinkhole-log', true),
     marker('ended-normally', true), marker('harness-ran', true),
   ];
 }
 
-module.exports = { clean, hostile, write, access, envRead, envEnumerate, procEnviron, tcp, dns, limit, loadOk, loadFail, marker };
+const MARKERS = ['instrumentation-heartbeat', 'paths-resolved', 'kernel-trace', 'sinkhole-log', 'ended-normally', 'harness-ran'];
+// A successful load plus every completeness marker ok: "nothing else wrong".
+const ok = () => [loadOk(), ...MARKERS.map((m) => marker(m, true))];
+
+module.exports = { MARKERS, ok, clean, hostile, write, access, envRead, envEnumerate, procEnviron, tcp, dns, limit, loadOk, loadFail, marker };

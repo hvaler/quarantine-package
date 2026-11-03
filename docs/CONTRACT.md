@@ -47,6 +47,23 @@ Limit overrides are for tests; acceptance runs at the defaults. The receipt alwa
 `file:`, `git+`/`git:`, URLs, `npm:` aliases, paths, names starting with `-`, whitespace and shell metacharacters.
 Ranges are limited to `^x.y.z` and `~x.y.z`; tags are allowed. The exact resolved version is in `package.version`.
 
+**Dependency specs (DEC-16, DEC-16r1).** The check runs before npm installs anything, inside the download container (`/opt/qp/precheck.cjs`):
+- **Root first.** The root manifest's declared specs are classified before anything else: `dependencies`, `optionalDependencies`, `peerDependencies` and `overrides`, nested override keys included and `$ref` values skipped. The root manifest is the fixture's `package.json`, or the registry manifest of the requested spec.
+  - If any root spec is not a registry spec, the walk stops there (`precheck.stage: "root"`, `manifestsFetched: 0`).
+  - For a fixture nothing has been fetched at all, and npm never runs.
+- **Then the tree.** Otherwise it walks the resolved tree breadth-first, reading `dependencies`, `optionalDependencies` and `peerDependencies` of every manifest.
+  - Only registry metadata (packuments, never tarballs) is fetched, and only for specs already classified as registry specs.
+  - A non-registry spec deeper in the tree is rejected before it is fetched (`stage: "tree"`). That is earlier than DEC-16r1 (2) requires.
+- **Shrinkwrap.** A shrinkwrap can pin dependencies to any source, whatever the declared specs say.
+  - A local fixture root that ships `npm-shrinkwrap.json` is rejected at the root stage.
+  - For registry packages the gate is the **verified lock**. `npm install --package-lock-only --ignore-scripts` resolves the tree without extracting anything. `inventory.cjs lock` then requires every lock entry to resolve from `https://registry.npmjs.org/`, carry an `integrity` hash, not be a link, and declare only registry specs. On failure the result is `aborted` / `download-non-registry`, with details in `download.lockcheck`.
+  - Only then does `npm ci --ignore-scripts` install exactly that verified lock.
+- **Residual limitation:** the tree walk fetches registry metadata for the registry-spec dependencies it visits before reaching a rejected one. Download-container egress is not restricted to the registry host in S1 (recorded as S4 hardening). This is also listed in the receipt's `knownLimitations`.
+- Each declared spec is classified with npm's own `npm-package-arg`. Only `version`, `range`, `tag`, or an `npm:` alias to one of these, is accepted. The host never matters.
+- Rejected without being fetched: `git+*`, `git:`, github shorthand, `http(s)` tarball URLs (registry host included), `file:`, `link:`, `workspace:` and unparseable specs. Each is listed in `download.precheck.nonRegistry[]` as `{from, dependency, field, specType, spec}`, with the URL redacted.
+- The task ends `status: aborted`, `abortReason: download-non-registry`, `verdict: null`, exit 3. The walk also enforces the package limit (`download-deps`).
+- After `npm install --ignore-scripts`, `download.inventory.nonRegistry` re-checks the lock: every package must be resolved from the registry and must not be a link, and every declared spec must be a registry spec.
+
 ## 2. Docker objects and lifecycle (DEC-7, DEC-14, DEC-15)
 
 Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId` = 10 hex characters) and labelled
@@ -62,8 +79,13 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 | `tracer` | container | `strace -f` attached to the sandbox |
 | `probe`, `ctlnet`, `ctlin`, `ctlout` | container/network | only with `--host-probe` (C2) |
 
-**Cleanup scope.** Cleanup and the reaper act only on objects labelled `qp.run-prefix=<prefix>`, or named
-`^ar-<prefix>-(download|sinkhole|sandbox|tracer|probe|ctlin|ctlout|net|ctlnet|vol)-[a-f0-9]{10}$`. Nothing else is touched.
+**Cleanup scope (ruling on S1-D2).** Several tasks can run at once under one prefix, and none touches another live task. Every object carries the labels `qp.run-prefix`, `qp.task-id`, `qp.owner-pid` (the CLI's pid) and `qp.created` (epoch ms).
+
+| Actor | Removes | Never removes |
+|---|---|---|
+| Task teardown and its watchdog | only objects of its own task: label `qp.task-id=<taskId>`, or the exact name `ar-<prefix>-<role>-<taskId>` | anything of another task |
+| Startup reaper (each `analyse`) | labelled objects of its prefix whose owner CLI is gone, or that are older than download + wall + 300 s (stale, e.g. pid reuse) | a live task of another CLI under the same prefix; unlabelled objects |
+| `cleanup` (explicit command) | every object of the prefix: labelled `qp.run-prefix=<prefix>` or named `^ar-<prefix>-(download\|sinkhole\|sandbox\|tracer\|probe\|ctlin\|ctlout\|net\|ctlnet\|vol)-[a-f0-9]{10}$` | anything outside the prefix |
 
 **Mechanisms.**
 - Normal end, failure or timeout: the orchestrator removes every object of the task in `finally`. The receipt records it in `teardown`.
@@ -75,7 +97,16 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
   - It runs as a grandchild, so it is not in the CLI's process tree.
   - It polls every 500 ms, sweeps once, then sweeps again after 3 s.
 - Ctrl+C: `SIGINT` does not interrupt `analyse`. The task tears down, writes its receipt, then exits. The watchdog also covers it.
-- Every `analyse` first reaps objects of its own prefix whose `qp.owner-pid` is no longer alive. `cleanup` removes all objects of the prefix.
+- Every `analyse` first runs the startup reaper (scope above). `cleanup` removes all objects of the prefix.
+- **End reason from evidence only (ruling on S1-D2).** A limit (`sandbox.limitsHit`, rule e) is recorded only when one of these happened:
+  - the orchestrator's own wall-clock timer fired (`wall-clock`);
+  - Docker reported an OOM kill (`memory`);
+  - the in-container hard timeout fired, which can only happen at or after wall + 5 s (`wall-clock`);
+  - the trace shows fork/clone EAGAIN (`pids`).
+
+  An **external stop** needs independent Docker evidence. Either Docker reports a `kill` or `stop` on the sandbox that the orchestrator did not issue, or the sinkhole is killed, stopped, removed or gone while the task runs. The result is `status: aborted`, `abortReason: killed-externally`, `verdict: null`, exit 4, with the Docker events in `sandbox.dockerEvents`. Rule (e) never fires for it.
+
+  A non-zero exit alone is **not** external. Package code runs as the same uid as the sandbox's pid 1 and can kill it, so such a run is observed and decided normally. `ended-normally` is false, so it is at least (i), and any other evidence keeps its rules.
 - **Host temp root:** none. The product writes no host-side temp files. A fixture is bind-mounted read-only from `<repo>/fixtures/<name>`, and the only host output is the receipt in `QP_RECEIPTS_DIR`.
 
 ## 3. Sandbox, tracer and sinkhole (C1, C2, DEC-12, DEC-13, DEC-16)
@@ -142,6 +173,11 @@ The nonce is readable by package code in the same process, so QPEV records are f
   - an exec whose envp carries `QP_ROLE=npm` but whose pid is not the orchestrator's npm pid;
   - an npm CLI exec (`/usr/local/bin/npm`, `.../npm/bin/npm-cli.js`) by any pid other than that one.
   A package-started npm is package code.
+- **Which execs must be instrumented (DEC-11r3).** Node is identified by the executed file, not its name.
+  - The trace resolves every exec path against the cwd and through every symlink created during the task. So `ln -s /usr/local/bin/node /tmp/qpx; /tmp/qpx` is a node exec, and a hard link from a writable mount to the image's node is impossible (EXDEV).
+  - Every node exec, and every exec by package code of any file on `/work`, `/tmp` or `/home/qp`, must show three kinds of instrumentation evidence: the preload flag in the traced envp, a traced open of `/opt/qp/preload.cjs` by that pid, and a heartbeat. Without it, `instrumentation-heartbeat` fails and the result is (i).
+  - This covers copies of node and any other binary. Scripts executed directly from those mounts also fail closed, because the trace cannot tell a script from an ELF binary. That is stricter than DEC-11r3 (2).
+  - `completeness.instrumentation-heartbeat.detail.reasons[<pid>]` names the cause and the path as executed.
 - The load record can be forged by package code that already runs inside the harness. This is listed in `knownLimitations`.
 
 ## 4. Actors (DEC-2r1)
@@ -162,7 +198,7 @@ Actors are derived from the process tree in the trace (clone/fork return values,
 |---|---|
 | `status` | `completed` or `aborted` |
 | `verdict` | `install`, `review`, `do-not-install`, or `null` when aborted |
-| `abortReason`, `abortDetail` | when aborted: `invalid-input`, `download-failed`, `download-time`, `download-size`, `download-deps`, `download-non-registry`, `infrastructure` |
+| `abortReason`, `abortDetail` | when aborted: `invalid-input`, `download-failed`, `download-time`, `download-size`, `download-deps`, `download-non-registry`, `tracer-unavailable`, `killed-externally`, `infrastructure` |
 | `rulesFired[]` | `{id, tier, text, observationIds[]}`, one per fired rule (`a`, `b`, `c1`, `d`, `e`, `f`, `g`, `h`, `i`) |
 | `package` | `{requested, source: registry\|fixture, name, version}` (exact resolved version) |
 | `limits` | applied limits (`downloadSeconds`, `downloadMaxBytes`, `downloadMaxPackages`, `sandboxSeconds`, `pids`, `memoryBytes`, `cpus`, `tmpfs*Bytes`) |
@@ -247,6 +283,10 @@ DEC-2r2 covers env and printenv executed by package code:
 | `forkbomb` | `qp-fixture-forkbomb` | `do-not-install` (e: pids or wall-clock, with a `pids-exhaustion` observation) |
 | `netprobe` | `qp-fixture-netprobe` | `review` (f): DNS name, direct IP 1.1.1.1:443, TLS SNI on 443 and 8443 |
 | `netbenign` | `qp-fixture-netbenign` | `review` (f): bodiless HTTP GET |
+| `dep-tarball-url` | `qp-fixture-dep-tarball-url` | `aborted`, `abortReason: download-non-registry`, exit 3 (DEC-16: every declared spec in the resolved tree must be a registry version, range, tag or npm: alias to one) |
+| `dep-git` | `qp-fixture-dep-git` | `aborted`, `download-non-registry` at the root stage, exit 3 |
+| `dep-shrinkwrap` | `qp-fixture-dep-shrinkwrap` | `aborted`, `download-non-registry` (root ships npm-shrinkwrap.json), exit 3 |
+| `node-symlink` | `qp-fixture-node-symlink` | `review` (i): uninstrumented node exec through a symlink (DEC-11r3) |
 
 ## 8. Host probe (C2, DEC-5r1)
 

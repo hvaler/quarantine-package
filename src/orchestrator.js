@@ -27,6 +27,7 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
   'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); an npm started by package code is therefore reported as incomplete instrumentation (review).',
   'Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) is invisible to both the kernel trace and the preload.',
+  'Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);
 
@@ -129,17 +130,18 @@ async function analyse(cfg, target, opts = {}) {
     if (target.fixture) {
       const f = resolveFixture(cfg.fixturesDir, target.fixture);
       if (!f.ok) return abort(receipt, 'invalid-input', f.error, 2);
-      src = { kind: 'fixture', name: f.name, dir: f.dir, spec: '/src', label: `fixture:${f.fixture}` };
+      src = { kind: 'fixture', name: f.name, version: f.version, dir: f.dir, spec: '/src', label: `fixture:${f.fixture}` };
     } else {
       const s = parseRegistrySpec(target.spec);
       if (!s.ok) return abort(receipt, 'invalid-input', s.error, 2);
       src = { kind: 'registry', name: s.name, spec: s.spec, label: s.spec };
     }
-    receipt.package = { requested: src.label, source: src.kind, name: src.name, version: null };
+    receipt.package = { requested: src.label, source: src.kind, name: src.name, version: src.version || null };
 
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
-    await lifecycle.reapOrphans(cfg.prefix);
+    // Stale = older than the longest possible task (download + sandbox + probe and teardown slack).
+    await lifecycle.reapOrphans(cfg.prefix, { staleMs: (cfg.limits.downloadSeconds + cfg.limits.sandboxSeconds + 300) * 1000 });
     watchdog = lifecycle.startWatchdog(process.pid, cfg.prefix, taskId);
 
     // ---- download (network on, scripts off)
@@ -150,7 +152,7 @@ async function analyse(cfg, target, opts = {}) {
       ...hardenedArgs(cfg, { tmpfs: [['/tmp', 256 * 1024 * 1024], ['/home/qp', 256 * 1024 * 1024]] }),
       '-v', `${vol}:/out`, '-e', 'HOME=/home/qp'];
     if (src.kind === 'fixture') dlArgs.push('-v', `${src.dir}:/src:ro`);
-    dlArgs.push(cfg.images.sandbox, 'timeout', '-s', 'KILL', String(cfg.limits.downloadSeconds + 5), '/opt/qp/download.sh', src.spec);
+    dlArgs.push(cfg.images.sandbox, 'timeout', '-s', 'KILL', String(cfg.limits.downloadSeconds + 5), '/opt/qp/download.sh', src.spec, String(cfg.limits.downloadMaxPackages), src.kind === 'fixture' ? src.name : '-');
     await docker(dlArgs, { allowFail: false });
     const dlInfo = await inspect(dlName);
     const dlStart = Date.now();
@@ -161,17 +163,27 @@ async function analyse(cfg, target, opts = {}) {
     await dl.done;
     clearTimeout(dlTimer);
     const inv = /QP-INVENTORY (\{.*\})/.exec(dl.stdout);
+    const preMatch = /QP-PRECHECK (\{.*\})/.exec(dl.stdout);
+    const precheck = preMatch ? JSON.parse(preMatch[1]) : null;
+    const lockMatch = /QP-LOCKCHECK (\{.*\})/.exec(dl.stdout);
+    const lockcheck = lockMatch ? JSON.parse(lockMatch[1]) : null;
     receipt.download = {
       container: dlName, hardening: hardeningSnapshot(dlInfo), seconds: (Date.now() - dlStart) / 1000,
-      exitCode: dl.code, inventory: inv ? JSON.parse(inv[1]) : null,
-      output: redact(tail(dl.stdout.replace(/QP-INVENTORY .*/, ''), 4000) + tail(dl.stderr, 2000)).text,
+      exitCode: dl.code, precheck, lockcheck, inventory: inv ? JSON.parse(inv[1]) : null,
+      output: redact(tail(dl.stdout.replace(/QP-(INVENTORY|PRECHECK|LOCKCHECK) .*/g, ''), 4000) + tail(dl.stderr, 2000)).text,
     };
     if (dlKilled || dl.code === 137) return await finish(abort(receipt, 'download-time', `download exceeded ${cfg.limits.downloadSeconds}s`, 3));
+    // DEC-16 pre-fetch check: non-registry specs anywhere in the tree are rejected before anything is fetched.
+    if (precheck && precheck.reason === 'download-non-registry') return await finish(abort(receipt, 'download-non-registry', `non-registry dependency specs: ${precheck.nonRegistry.map((d) => `${d.dependency} (${d.specType}, in ${d.from})`).join('; ').slice(0, 300)}`, 3));
+    // Verified lock (before npm ci extracts anything): shrinkwrap pins and any other non-registry resolution.
+    if (lockcheck && lockcheck.ok === false) return await finish(abort(receipt, 'download-non-registry', `resolved lock has non-registry entries: ${lockcheck.nonRegistry.map((d) => `${d.path} (${d.reason})`).join('; ').slice(0, 300)}`, 3));
+    if (precheck && precheck.reason === 'download-deps') return await finish(abort(receipt, 'download-deps', `more than ${cfg.limits.downloadMaxPackages} packages in the tree`, 3));
     if (!inv || dl.code !== 0) return await finish(abort(receipt, 'download-failed', 'package could not be downloaded (not found, registry error or install failure)', 3));
     const inventory = receipt.download.inventory;
     receipt.package.version = inventory.version;
     // A local fixture is itself installed from a packed tarball; only its dependencies must come from the registry.
-    inventory.nonRegistry = inventory.nonRegistry.filter((d) => !(src.kind === 'fixture' && d.path === `node_modules/${src.name}`));
+    // The exemption covers only where the fixture itself resolved from, never its declared dependency specs.
+    inventory.nonRegistry = inventory.nonRegistry.filter((d) => !(src.kind === 'fixture' && d.path === `node_modules/${src.name}` && d.reason === 'resolved outside the registry'));
     if (inventory.nonRegistry.length) return await finish(abort(receipt, 'download-non-registry', 'resolved tree contains non-registry dependencies (git, tarball URL, file or link)', 3));
     if (inventory.packageCount > cfg.limits.downloadMaxPackages) return await finish(abort(receipt, 'download-deps', `${inventory.packageCount} packages exceeds ${cfg.limits.downloadMaxPackages}`, 3));
     if (inventory.unpackedBytes > cfg.limits.downloadMaxBytes) return await finish(abort(receipt, 'download-size', `${inventory.unpackedBytes} bytes exceeds ${cfg.limits.downloadMaxBytes}`, 3));
@@ -200,7 +212,11 @@ async function analyse(cfg, target, opts = {}) {
 
     // ---- sandbox (created, snapshotted, started) + tracer
     const sbName = N('sandbox');
-    const events = attach(['events', '--filter', `container=${sbName}`, '--filter', 'event=oom', '--format', '{{.Action}}']);
+    // Docker-side evidence for the end reason: OOM, and kill/stop/destroy issued
+    // through the Docker API (never emitted for a signal sent inside the container).
+    const events = attach(['events', '--filter', `container=${sbName}`, '--filter', `container=${sinkName}`,
+      '--filter', 'event=oom', '--filter', 'event=kill', '--filter', 'event=stop', '--filter', 'event=destroy',
+      '--format', '{{.Action}} {{.Actor.Attributes.name}}']);
     handles.push(events);
     const sbArgs = ['create', '--rm', '--name', sbName, ...L, '--network', `container:${sinkName}`,
       ...hardenedArgs(cfg, { tmpfs: [['/work', cfg.limits.tmpfsWorkBytes], ['/tmp', cfg.limits.tmpfsTmpBytes], ['/home/qp', cfg.limits.tmpfsHomeBytes]] }),
@@ -228,9 +244,10 @@ async function analyse(cfg, target, opts = {}) {
       handles.push(tr);
     }
     let killed = false;
+    let ourKillAt = null;
     let trEndedAt = null;
     if (tr) tr.done.then(() => { trEndedAt = Date.now(); });
-    const sbTimer = setTimeout(() => { killed = true; docker(['kill', sbName]); }, cfg.limits.sandboxSeconds * 1000);
+    const sbTimer = setTimeout(() => { killed = true; ourKillAt = Date.now(); docker(['kill', sbName]); }, cfg.limits.sandboxSeconds * 1000);
     await sb.done;
     const sbEndedAt = Date.now();
     clearTimeout(sbTimer);
@@ -249,7 +266,26 @@ async function analyse(cfg, target, opts = {}) {
     const traceComplete = !(trEndedAt !== null && trEndedAt < sbEndedAt - 1000);
     events.child.kill();
     await sleep(200);
-    const oom = /oom/.test(events.stdout);
+    const evLines = events.stdout.split(/\r?\n/).filter(Boolean);
+    const oom = evLines.some((l) => l.startsWith('oom '));
+
+    // ---- end reason from evidence only (ruling on S1-D2)
+    // A limit is recorded only when: the orchestrator's own timer fired (killed),
+    // Docker reported an OOM kill, or the in-container hard timeout fired, which
+    // can only happen after wall+5 s. An external stop needs independent Docker
+    // evidence: a kill/stop on the sandbox that the orchestrator did not issue,
+    // or the sinkhole being killed, stopped or removed while the task ran. A
+    // non-zero exit alone is NOT external: package code (same uid as pid 1) can
+    // kill pid 1 itself, so such a run is still observed and decided (the
+    // ended-normally marker is false, so at least (i)).
+    const backstopFired = sb.code === 137 && !killed && !oom && sbSeconds >= cfg.limits.sandboxSeconds + 4;
+    const sinkholeAlive = !!(await inspect(sinkName));
+    const foreignSandboxKill = evLines.some((l) => /^(kill|stop) /.test(l) && l.endsWith(` ${sbName}`)) && !killed;
+    const sinkholeStopped = evLines.some((l) => /^(kill|stop|destroy) /.test(l) && l.endsWith(` ${sinkName}`));
+    if (!killed && !oom && !backstopFired && (foreignSandboxKill || sinkholeStopped || !sinkholeAlive)) {
+      receipt.sandbox = { container: sbName, containerId: sbInfo && sbInfo.Id, exitCode: sb.code, seconds: sbSeconds, sinkholeAlive, dockerEvents: evLines.slice(0, 20), hardening: hardeningSnapshot(sbInfo) };
+      return await finish(abort(receipt, 'killed-externally', `the sandbox ended with exit ${sb.code} after ${sbSeconds.toFixed(1)} s; Docker reported a kill/stop/removal not issued by this task (sandbox kill: ${foreignSandboxKill}, sinkhole stopped or gone: ${sinkholeStopped || !sinkholeAlive})`, 4));
+    }
 
     // ---- probe controls and stop
     if (probeRun) receipt.hostProbe = await probe.finish(cfg, probeRun, { taskId, labels: L, net, sinkholeIp });
@@ -259,7 +295,7 @@ async function analyse(cfg, target, opts = {}) {
     const ended = sb.code === 0 && !killed;
     const limits = [];
     if (killed) limits.push({ reason: 'wall-clock', detail: `killed by the orchestrator after ${cfg.limits.sandboxSeconds}s` });
-    else if (sb.code === 137 && !oom) limits.push({ reason: 'wall-clock', detail: 'killed by the in-container hard timeout' });
+    else if (backstopFired) limits.push({ reason: 'wall-clock', detail: `killed by the in-container hard timeout (wall + 5 s) after ${sbSeconds.toFixed(1)} s` });
     if (oom) limits.push({ reason: 'memory', detail: 'OOM kill reported by Docker' });
     const ob = observe.build({
       traceText: tr ? tr.stdout : '', sinkholeText: (await docker(['logs', sinkName])).stdout,
@@ -314,7 +350,7 @@ async function analyse(cfg, target, opts = {}) {
   async function finish(result) {
     for (const h of handles) if (!h.exited) { try { h.child.kill(); } catch (_) { /* gone */ } }
     const removed = await lifecycle.removeTask(cfg.prefix, taskId);
-    const left = (await lifecycle.listObjects(cfg.prefix, ['--filter', `label=qp.task-id=${taskId}`]));
+    const left = await lifecycle.listObjects(cfg.prefix, { taskId, nameSweep: true });
     result.receipt.teardown = { removed, leftoversForTask: left.map((o) => `${o.type}:${o.name}`), hostTempDirs: [] };
     if (watchdog) { try { process.kill(watchdog.pid); } catch (_) { /* already gone */ } }
     result.receipt.finishedAt = clock.now().toISOString();

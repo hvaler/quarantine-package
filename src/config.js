@@ -62,6 +62,7 @@ function labels(cfg, taskId) {
     '--label', `qp.run-prefix=${cfg.prefix}`,
     '--label', `qp.task-id=${taskId}`,
     '--label', `qp.owner-pid=${process.pid}`,
+    '--label', `qp.created=${Date.now()}`,
   ];
 }
 

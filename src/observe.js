@@ -272,8 +272,22 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   // is required too, but alone it can be forged and never suffices.
   const heartbeats = new Set(pre.filter((x) => x.type === 'hb').map((x) => x.pid));
   const preloadOpened = new Set(tr.events.filter((x) => x.type === 'fs-read' && x.path === '/opt/qp/preload.cjs' && !x.blocked).map((x) => x.pid));
+  // DEC-11r3: execs that must show instrumentation evidence:
+  //  - every exec of node, identified by the executed file: the trace resolves the
+  //    exec path through cwd and every symlink created during the task (a hard link
+  //    from a writable mount to the image's node is impossible: EXDEV);
+  //  - every exec by package code of a file on a sandbox-writable mount (/work, /tmp,
+  //    HOME): a copy of node, or any binary there, cannot be told apart in the trace,
+  //    so it must prove it is instrumented node or the marker fails (fail closed).
+  const WRITABLE = ['/work', '/tmp', '/home/qp'];
+  const onWritable = (p) => typeof p === 'string' && WRITABLE.some((w) => under(p, w));
   const lastNodeExec = new Map();
-  for (const x of tr.events) if (x.type === 'exec' && /\/node$/.test(x.path)) lastNodeExec.set(x.pid, x);
+  for (const x of tr.events) {
+    if (x.type !== 'exec') continue;
+    const isNode = /^\/usr\/local\/bin\/node$/.test(x.path) || /\/node$/.test(x.path);
+    const pkgWritable = onWritable(x.path) && COUNTED.has(forRules(actorOf(x.pid)));
+    if (isNode || pkgWritable) lastNodeExec.set(x.pid, { ...x, writable: pkgWritable && !isNode });
+  }
   const nodePids = [...lastNodeExec.keys()];
   const reasons = {};
   for (const [pid, x] of lastNodeExec) {
@@ -286,6 +300,8 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     const roleVar = (x.envp || []).find((v) => typeof v === 'string' && v.startsWith('QP_ROLE='));
     if (roleVar === 'QP_ROLE=npm' && pid !== roles.npmPid) r.push('QP_ROLE=npm on a process that is not the orchestrator\'s npm (env would be unwrapped)');
     if (NPM_CLI_PATHS.includes(x.argv[1]) && pid !== roles.npmPid) r.push('npm CLI started by package code');
+    if (r.length && x.writable) r.unshift(`exec of ${x.path} from a sandbox-writable mount, not shown to be instrumented node`);
+    if (r.length && x.rawPath && x.rawPath !== x.path) r.push(`executed as ${x.rawPath}`);
     if (r.length) reasons[pid] = r;
   }
   const missingHb = Object.keys(reasons).map(Number);

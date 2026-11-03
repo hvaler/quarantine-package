@@ -174,11 +174,15 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'execve': {
-        const { path, argv: av, envp } = execArgs(c.args);
+        const { path: rawExe, argv: av, envp } = execArgs(c.args);
         if (c.ret === 0) {
+          // DEC-11r3: identify what was executed, not its name. The path is resolved
+          // against the cwd and through every symlink created during the task.
+          const resolved = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
+          const path = resolved ? canonical(resolved) : rawExe;
           exe.set(p, path);
           argv.set(p, av);
-          events.push({ ...base, type: 'exec', path, argv: av, envp });
+          events.push({ ...base, type: 'exec', path, rawPath: rawExe, argv: av, envp });
         }
         break;
       }

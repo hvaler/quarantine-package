@@ -243,6 +243,55 @@ test('r2 point 7: a bind to a fixed port and a listen are net-listen observation
   assert.equal(l[0].port, 53);
 });
 
+test('AF-3 (DEC-11r3): node run through a symlink in /tmp without the preload fails the marker', () => {
+  const base = ['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40)];
+  const ob = mini([
+    ...base,
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000450 symlink("/usr/local/bin/node", "/tmp/qpx") = 0',
+    '41 21:00:00.000500 execve("/tmp/qpx", ["/tmp/qpx", "-e", "process.env.NPM_TOKEN"], ' + ENV_STRIPPED + ') = 0',
+  ], { out: hb([40]) });
+  const m = markerOf(ob, 'instrumentation-heartbeat');
+  assert.equal(m.ok, false);
+  assert.ok(m.detail.reasons[41].includes('NODE_OPTIONS without the preload'));
+  assert.ok(m.detail.reasons[41].some((s) => /executed as \/tmp\/qpx/.test(s)));
+});
+
+test('AF-3 (DEC-11r3): a relative symlink in /work resolves to node too', () => {
+  const ob = mini([
+    '40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40),
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 42',
+    '42 21:00:00.000410 chdir("/work") = 0',
+    '42 21:00:00.000450 symlink("../usr/local/bin/node", "n") = 0',
+    '42 21:00:00.000500 execve("./n", ["./n"], ' + ENV_STRIPPED + ') = 0',
+  ], { out: hb([40]) });
+  assert.equal(markerOf(ob, 'instrumentation-heartbeat').ok, false);
+});
+
+test('AF-3 (DEC-11r3): a non-node binary or copy executed from a writable mount fails closed', () => {
+  for (const p of ['/tmp/copy-of-node', '/work/node_modules/pkg/bin/tool', '/home/qp/x']) {
+    const ob = mini([
+      '40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40),
+      '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 43',
+      `43 21:00:00.000500 execve("${p}", ["${p}"], ${ENV_OK}) = 0`,
+    ], { out: hb([40, 43]) });
+    const m = markerOf(ob, 'instrumentation-heartbeat');
+    assert.equal(m.ok, false, p);
+    assert.match(m.detail.reasons[43][0], /sandbox-writable mount/, p);
+  }
+});
+
+test('AF-3: an instrumented node copy on a writable mount passes; system binaries are not affected', () => {
+  const ob = mini([
+    '40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40),
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 44',
+    `44 21:00:00.000500 execve("/work/copy", ["/work/copy"], ${ENV_OK}) = 0`, preloadOpen(44),
+    '40 21:00:00.000600 clone(child_stack=NULL, flags=SIGCHLD) = 45',
+    `45 21:00:00.000700 execve("/usr/bin/sh", ["sh", "-c", "true"], ${ENV_OK}) = 0`,
+  ], { out: hb([40, 44]) });
+  assert.equal(markerOf(ob, 'instrumentation-heartbeat').ok, true);
+});
+
 test('printenv NAME is an env read of NAME', () => {
   const ob = mini(['40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42', '42 21:00:00.000600 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ' + ENV_OK + ') = 0']);
   const r = ob.observations.find((o) => o.kind === 'env-read');
