@@ -105,6 +105,7 @@ async function analyse(cfg, target, opts = {}) {
     rulesFired: [],
     package: null,
     limits: { ...cfg.limits },
+    images: { tag: cfg.imageTag, ...cfg.images },
     download: null,
     sandbox: null,
     harness: { mode: HARNESS_MODE, loaded: null },

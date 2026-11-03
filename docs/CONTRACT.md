@@ -8,7 +8,7 @@ The basis is dispatch 1 plus decision revision 1 (DEC-2r1, DEC-5r1, DEC-11 to DE
 From a clean clone (Node ≥ 22.12 on the host, Docker running):
 
 ```sh
-npm run build:images                      # builds qp-sandbox:s1 and qp-sinkhole:s1 (bases pinned by digest)
+npm run build:images                      # builds qp-sandbox:s1-<sha8> and qp-sinkhole:s1-<sha8> (bases pinned by digest)
 node src/cli.js analyse <spec> [--host-probe]
 node src/cli.js analyse --fixture <name> [--host-probe]
 node src/cli.js leftovers
@@ -34,6 +34,7 @@ npm test                                  # unit tests (node:test)
 | Variable | Meaning | Default |
 |---|---|---|
 | `QP_RUN_PREFIX` | run prefix, `^[a-z0-9]{1,16}$` | `qp` |
+| `QP_IMAGE_TAG` | tag of the product images (`qp-sandbox:<tag>`, `qp-sinkhole:<tag>`); the receipt records tags and image ids (`images`, `*.hardening.imageId`) | `s1-<first 8 hex of the checkout HEAD>` |
 | `QP_RECEIPTS_DIR` | where receipts are written | `./receipts` (relative to the cwd) |
 | `QP_SANDBOX_TIMEOUT_S` | sandbox wall clock | 60 |
 | `QP_DOWNLOAD_TIMEOUT_S` | download wall clock | 120 |
@@ -80,7 +81,7 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 ## 3. Sandbox, tracer and sinkhole (C1, C2, DEC-12, DEC-13, DEC-16)
 
 **Sandbox.**
-- Image `qp-sandbox:s1`, from `node:22-bookworm-slim@sha256:4b150b48…7279da` (Node 22.23.4) plus `strace`.
+- Image `qp-sandbox:s1-<sha8>`, from `node:22-bookworm-slim@sha256:4b150b48…7279da` (Node 22.23.4) plus `strace`.
 - Flags: `--read-only --cap-drop ALL --security-opt no-new-privileges --user 10001:10001 --pids-limit 64 --memory 268435456 --memory-swap 268435456 --cpus 0.5`.
 - tmpfs mounts, each `rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=0700`:
   - `/work` 128 MiB;
@@ -93,7 +94,7 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 - No docker.sock, no host pid/ipc/userns.
 
 **Tracer.**
-- Image `qp-sandbox:s1`, `--entrypoint /opt/qp/trace.sh`.
+- Image `qp-sandbox:s1-<sha8>`, `--entrypoint /opt/qp/trace.sh`.
 - Flags: `--pid container:<sandbox>` (shared pid namespace), `--network none`, `--read-only`, `--cap-drop ALL --cap-add SYS_PTRACE`, `--security-opt no-new-privileges`, `--user 0:0`, `--pids-limit 16`.
 - Behaviour:
   - It runs `strace -f -qq -tt -y -s 4096` over execve/clone/fork, the file syscalls, socket/connect/send* and chdir, attached to the sandbox's pid 1.
@@ -107,7 +108,7 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 - This replaces "strace as parent inside the sandbox" (DEC-12 example). The backstop is still kernel-level and covers every descendant of the sandbox's pid 1.
 
 **Sinkhole.**
-- Image `qp-sinkhole:s1`, from `python:3.12-alpine@sha256:e6dae5…a9c8` plus iptables and tcpdump.
+- Image `qp-sinkhole:s1-<sha8>`, from `python:3.12-alpine@sha256:e6dae5…a9c8` plus iptables and tcpdump.
 - Flags: `--cap-drop ALL --cap-add NET_ADMIN --read-only --security-opt no-new-privileges`, `--sysctl net.ipv6.conf.all.disable_ipv6=1`, `--sysctl net.ipv4.conf.all.route_localnet=1`.
 - Its entrypoint does three things:
   - adds a default route on its only interface;

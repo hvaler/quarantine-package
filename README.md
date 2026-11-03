@@ -16,7 +16,7 @@ Vultr deployment and full documentation (S4) come later.
 ## From a clean clone
 
 ```sh
-npm run build:images                          # qp-sandbox:s1 and qp-sinkhole:s1 (base images pinned by digest)
+npm run build:images                          # qp-sandbox:s1-<sha8> and qp-sinkhole:s1-<sha8> (base images pinned by digest)
 npm test                                      # unit tests (verdict rules, trace parsing, attribution, inputs)
 node src/cli.js analyse express@4.21.2        # registry package  -> install
 node src/cli.js analyse --fixture hostile     # local fixture     -> do-not-install
