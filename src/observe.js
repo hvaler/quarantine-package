@@ -291,9 +291,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     // /sbin), excluding the dynamic loader (it runs whatever its argv names).
     // Everything else (/dev/fd/N, /proc/*/fd/N, /proc/*/exe unresolved, execveat,
     // /lib*/ld-*.so, any other path) must prove instrumentation or the marker fails.
+    // Defensive: the trace already normalises exec paths, but the allowlist never
+    // trusts that. A path that is not absolute and canonical is never a system binary.
     const p = String(x.path);
+    const canonicalPath = p.startsWith('/') && !p.includes('//') && !p.split('/').some((s) => s === '.' || s === '..');
     const loader = /(^|\/)ld-(linux|musl)[^/]*\.so[^/]*$|\/ld\.so$/.test(p);
-    const systemBinary = /^\/(usr|bin|sbin)\//.test(p) && !loader;
+    const systemBinary = canonicalPath && /^\/(usr|bin|sbin)\//.test(p) && !loader;
     const opaque = byPkg && !isNode && (x.opaque || !systemBinary);
     const pkgWritable = onWritable(x.path) && byPkg;
     if (isNode || pkgWritable || opaque) lastNodeExec.set(x.pid, { ...x, writable: (pkgWritable || opaque) && !isNode });

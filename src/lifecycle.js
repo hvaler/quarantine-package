@@ -43,10 +43,12 @@ async function listObjects(prefix, opts = {}) {
   if (!opts.nameSweep) return all;
   const seen = new Set(all.map((o) => `${o.type}:${o.name}`));
   const pattern = ownName(prefix, opts.taskId || undefined);
+  // The query itself is scoped: with a taskId, Docker is asked only for that task's names.
+  const nameQuery = opts.taskId ? `name=^ar-${prefix}-[a-z]+-${opts.taskId}$` : `name=^ar-${prefix}-`;
   const byName = await Promise.all([
-    docker(['ps', '-a', '--filter', `name=^ar-${prefix}-`, '--format', '{{.Names}}']),
-    docker(['network', 'ls', '--filter', `name=^ar-${prefix}-`, '--format', '{{.Name}}']),
-    docker(['volume', 'ls', '--filter', `name=^ar-${prefix}-`, '--format', '{{.Name}}']),
+    docker(['ps', '-a', '--filter', nameQuery, '--format', '{{.Names}}']),
+    docker(['network', 'ls', '--filter', nameQuery, '--format', '{{.Name}}']),
+    docker(['volume', 'ls', '--filter', nameQuery, '--format', '{{.Name}}']),
   ]);
   ['container', 'network', 'volume'].forEach((type, i) => {
     for (const name of byName[i].stdout.split(/\r?\n/).filter(Boolean)) {
