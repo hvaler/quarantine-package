@@ -299,6 +299,10 @@ test('self-review: re-exec via /proc/self/exe, the dynamic loader or execveat mu
     ['41 21:00:00.000450 execve("/usr/local/bin/node", ["node", "a.js"], ' + ENV_OK + ') = 0', preloadOpen(41), '41 21:00:00.000500 execve("/proc/self/exe", ["x", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
     ['41 21:00:00.000500 execve("/lib64/ld-linux-x86-64.so.2", ["ld", "/usr/local/bin/node", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
     ['41 21:00:00.000500 execveat(3</usr/local/bin/node>, "", ["x", "-e", "1"], ' + ENV_STRIPPED + ', AT_EMPTY_PATH) = 0'],
+    ['41 21:00:00.000500 execve("/dev/fd/3", ["x", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
+    ['41 21:00:00.000500 execve("/proc/self/fd/3", ["x", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
+    ['41 21:00:00.000500 execve("/proc/41/fd/7", ["x", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
+    ['41 21:00:00.000500 execve("/opt/somewhere/else", ["x"], ' + ENV_STRIPPED + ') = 0'],
   ];
   for (const lines of cases) {
     const ob = mini([...base, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41', ...lines], { out: hb([40, 41]) });

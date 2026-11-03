@@ -286,10 +286,15 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     if (x.type !== 'exec') continue;
     const isNode = /^\/usr\/local\/bin\/node$/.test(x.path) || /\/node$/.test(x.path);
     const byPkg = COUNTED.has(forRules(actorOf(x.pid)));
-    // Execs whose real program cannot be identified from the path must also prove
-    // instrumentation (fail closed): the dynamic loader runs whatever its argv names,
-    // execveat runs an fd, and an unresolvable /proc/*/exe is unknown.
-    const opaque = byPkg && (x.opaque || /(^|\/)ld-(linux|musl)[^/]*\.so[^/]*$|\/ld\.so$/.test(String(x.path)) || /^\/proc\//.test(String(x.path)));
+    // Allowlist, fail closed: a package exec counts as observable only when it is
+    // node or a binary from the image's read-only system directories (/usr, /bin,
+    // /sbin), excluding the dynamic loader (it runs whatever its argv names).
+    // Everything else (/dev/fd/N, /proc/*/fd/N, /proc/*/exe unresolved, execveat,
+    // /lib*/ld-*.so, any other path) must prove instrumentation or the marker fails.
+    const p = String(x.path);
+    const loader = /(^|\/)ld-(linux|musl)[^/]*\.so[^/]*$|\/ld\.so$/.test(p);
+    const systemBinary = /^\/(usr|bin|sbin)\//.test(p) && !loader;
+    const opaque = byPkg && !isNode && (x.opaque || !systemBinary);
     const pkgWritable = onWritable(x.path) && byPkg;
     if (isNode || pkgWritable || opaque) lastNodeExec.set(x.pid, { ...x, writable: (pkgWritable || opaque) && !isNode });
   }
