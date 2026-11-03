@@ -150,6 +150,13 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
   - HTTP: method, host, path, body length and chunked flag;
   - DNS: query name and type. The answer is a per-name fake address in 198.18.0.0/15, never routed.
 - It answers HTTP with 403 and refuses TLS after the ClientHello. Nothing is forwarded, since the network is internal.
+- **Capacity (AF-4).** The TCP sink is event-driven: one thread, a selector, no thread or process per connection, and `listen(4096)`. Every accepted connection is recorded when its request is complete, when the peer closes, or after 2 s.
+  - Its container limits (`--pids-limit 256`, `--memory 512m`, `nofile 65536`) sit far above what the sandbox can open. The sandbox has 64 pids, and held connections cost the sinkhole no process.
+  - The orchestrator waits 2.5 s after the sandbox ends before reading the log, so in-flight connections are recorded.
+  - Load check without Docker: `python scripts/sinkhole-load-check.py 150` holds 150 connections and then POSTs; the POST is recorded with its payload.
+- **Backstop (AF-4).** `completeness.sinkhole-log` is ok only if the sinkhole reported ready **and** every kernel-traced package TCP connect or DNS query that reached the redirect has a matching sinkhole record.
+  - Local failures before any packet do not count: ENETUNREACH, EAFNOSUPPORT, EADDRNOTAVAIL (e.g. IPv6).
+  - Refused or unrecorded attempts do count, giving (i). Their observation ids are listed in `detail.unmatchedObservationIds`.
 - **Listeners in the shared namespace:** TCP `0.0.0.0:15001`, UDP `0.0.0.0:15353` (DNS), UDP `0.0.0.0:15354` (other UDP), plus Docker's embedded DNS on `127.0.0.11`. The sinkhole uses no unix sockets, abstract ones included.
 - **What the sandbox can and cannot do in that namespace:**
   - Every TCP connection and UDP datagram from uid 10001 is redirected by the nat rules, loopback and the sinkhole's own ports included. So any direct attempt to reach a listener is itself logged as an attempt (`orig_dest` 127.0.0.1:<port>), never parsed as a sinkhole record.
@@ -177,6 +184,10 @@ The nonce is readable by package code in the same process, so QPEV records are f
   - The trace resolves every exec path against the cwd and through every symlink created during the task. So `ln -s /usr/local/bin/node /tmp/qpx; /tmp/qpx` is a node exec, and a hard link from a writable mount to the image's node is impossible (EXDEV).
   - Every node exec, and every exec by package code of any file on `/work`, `/tmp` or `/home/qp`, must show three kinds of instrumentation evidence: the preload flag in the traced envp, a traced open of `/opt/qp/preload.cjs` by that pid, and a heartbeat. Without it, `instrumentation-heartbeat` fails and the result is (i).
   - This covers copies of node and any other binary. Scripts executed directly from those mounts also fail closed, because the trace cannot tell a script from an ELF binary. That is stricter than DEC-11r3 (2).
+  - **Cycle 3 (SR-1 to SR-3, ruling f1ebd3ab):**
+    - A system binary reached through a symlink the task created is not trusted (`viaLink`). Links are forgotten when their path is unlinked, removed or renamed, and unlink, rename, link, symlink and lstat act on the link itself, never its target.
+    - Only `/proc/self/exe` and `/proc/thread-self/exe` are resolved; `/proc/<other pid>/exe` stays opaque.
+    - The envp of `execveat` is never trusted (`envp not traced`), so it always fails the marker.
   - **Allowlist (fail closed).** A package exec counts as observable only when it is node, or a binary from the image's read-only system directories `/usr`, `/bin` or `/sbin` (the dynamic loader `ld-linux*`/`ld-musl*`/`ld.so` excluded). Every other package exec must show the same instrumentation evidence, or the marker fails (i). That covers `/dev/fd/N`, `/proc/*/fd/N`, the loader, `execveat` (traced, identified by fd) and any other path. `/proc/<self|thread-self|pid>/exe` is first resolved to that process's current binary, so a node re-exec is a node exec.
   - `completeness.instrumentation-heartbeat.detail.reasons[<pid>]` names the cause and the path as executed.
 - The load record can be forged by package code that already runs inside the harness. This is listed in `knownLimitations`.

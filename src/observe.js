@@ -179,9 +179,18 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   const dnsNames = new Map();
   for (const r of sandboxSink) if (r.type === 'dns' && r.answer) dnsNames.set(r.answer, r.name);
 
+  // AF-4(a) backstop: a package TCP connect or DNS query that the kernel shows
+  // reaching the redirect, with no matching sinkhole record, means the sinkhole
+  // log is incomplete for this task (e.g. the sinkhole was saturated). Local
+  // failures before any packet (no route, no IPv6) are not redirect attempts.
+  const LOCAL_FAILURES = new Set(['ENETUNREACH', 'EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EINVAL', 'EBADF', 'ENOTSOCK']);
+  const dnsTimes = sandboxSink.filter((r) => r.type === 'dns').map((r) => secondsOfDayIso(r.t)).filter((t) => t !== null);
+  const unmatchedIds = [];
+
   for (const e of netEvents) {
     const actor = forRules(actorOf(e.pid));
     const recs = sinkByTrace.get(e) || [];
+    const reachedRedirect = e.family === 'inet' && !(e.blocked && LOCAL_FAILURES.has(e.errno));
     // Only UDP 53 is DNS. TCP to port 53 is an ordinary TCP attempt whose
     // payload is judged from the sinkhole record like any other port.
     const isDns = e.port === 53 && e.proto === 'udp';
@@ -189,8 +198,11 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
       const names = [...new Set(recs.map((r) => r.name).filter(Boolean))];
       add({ kind: 'net-dns', actor, pid: e.pid, exe: exeOf(e.pid), dest: names.join(',') || null, orig_dest: `${e.ip}:${e.port}`, port: 53, proto: e.proto, blocked: e.blocked, payload: false,
         extra: { sinkholeLogged: recs.length > 0, queries: recs.map((r) => ({ name: r.name, qtype: r.qtype })) } });
+      const answered = recs.length > 0 || dnsTimes.some((t) => t >= e.t - 0.05 && t <= e.t + 2.0);
+      if (COUNTED.has(actor) && reachedRedirect && !answered) unmatchedIds.push(obs[obs.length - 1].id);
       continue;
     }
+    if (COUNTED.has(actor) && reachedRedirect && e.proto !== 'udp' && !recs.length) unmatchedIds.push(`o${obs.length + 1}`);
     const r = recs[0];
     const name = (r && r.dstName) || dnsNames.get(e.ip) || null;
     let payload = false;
@@ -296,7 +308,9 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     const p = String(x.path);
     const canonicalPath = p.startsWith('/') && !p.includes('//') && !p.split('/').some((s) => s === '.' || s === '..');
     const loader = /(^|\/)ld-(linux|musl)[^/]*\.so[^/]*$|\/ld\.so$/.test(p);
-    const systemBinary = canonicalPath && /^\/(usr|bin|sbin)\//.test(p) && !loader;
+    // SR-1: a system binary reached through a symlink the task created is not
+    // trusted (the link's target may no longer be what runs): it must prove itself.
+    const systemBinary = canonicalPath && /^\/(usr|bin|sbin)\//.test(p) && !loader && !x.viaLink;
     const opaque = byPkg && !isNode && (x.opaque || !systemBinary);
     const pkgWritable = onWritable(x.path) && byPkg;
     if (isNode || pkgWritable || opaque) lastNodeExec.set(x.pid, { ...x, writable: (pkgWritable || opaque) && !isNode });
@@ -325,7 +339,10 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
       ok: tr.calls > 0 && roles.stagePid !== null && traceComplete,
       detail: { syscalls: tr.calls, state: tr.calls === 0 || roles.stagePid === null ? 'missing' : traceComplete ? 'complete' : 'incomplete' },
     },
-    'sinkhole-log': { ok: sinkReady, detail: {} },
+    'sinkhole-log': {
+      ok: sinkReady && unmatchedIds.length === 0,
+      detail: { ready: sinkReady, unmatchedObservationIds: unmatchedIds, rule: 'every traced package TCP connect / DNS query that reached the redirect has a sinkhole record (AF-4)' },
+    },
     'ended-normally': { ok: !!sandboxEndedNormally, detail: {} },
     'harness-ran': { ok: !!load, detail: {} },
   };

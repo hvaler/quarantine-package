@@ -149,48 +149,39 @@ def parse_sni(hello):
     return None
 
 
-def recv_some(conn, limit, deadline):
-    buf = b""
-    while len(buf) < limit:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        conn.settimeout(remaining)
-        try:
-            chunk = conn.recv(min(4096, limit - len(buf)))
-        except (socket.timeout, OSError):
-            break
-        if not chunk:
-            break
-        buf += chunk
-        if b"\r\n\r\n" in buf and buf[:1] != b"\x16":
-            head, _, body = buf.partition(b"\r\n\r\n")
-            cl = 0
-            for line in head.split(b"\r\n")[1:]:
-                k, _, v = line.partition(b":")
-                if k.strip().lower() == b"content-length":
-                    try:
-                        cl = int(v.strip())
-                    except ValueError:
-                        cl = 0
-            if len(body) >= min(cl, limit):
-                break
-        if buf[:1] == b"\x16" and len(buf) >= 5:
+RECV_LIMIT = 65536
+CONN_DEADLINE_S = 2.0
+
+
+def request_complete(buf):
+    """True once enough bytes arrived to classify the connection."""
+    if len(buf) >= RECV_LIMIT:
+        return True
+    if buf[:1] == b"\x16":
+        if len(buf) >= 5:
             rec_len = struct.unpack("!H", buf[3:5])[0]
-            if len(buf) >= 5 + rec_len:
-                break
-    return buf
+            return len(buf) >= 5 + rec_len
+        return False
+    if b"\r\n\r\n" in buf:
+        head, _, body = buf.partition(b"\r\n\r\n")
+        cl = 0
+        for line in head.split(b"\r\n")[1:]:
+            k, _, v = line.partition(b":")
+            if k.strip().lower() == b"content-length":
+                try:
+                    cl = int(v.strip())
+                except ValueError:
+                    cl = 0
+        return len(body) >= min(cl, RECV_LIMIT)
+    return False
 
 
-def handle_tcp(conn, addr):
+def finish_tcp(conn, addr, dst, data):
+    """Classify what a connection sent, answer HTTP, emit one record, close."""
     try:
-        try:
-            dst_ip, dst_port = original_dst(conn)
-        except OSError:
-            dst_ip, dst_port = None, None
+        dst_ip, dst_port = dst
         rec = {"type": "tcp", "srcIp": addr[0], "srcPort": addr[1], "dstIp": dst_ip, "dstPort": dst_port,
                "dstName": _names_by_ip.get(dst_ip)}
-        data = recv_some(conn, 65536, time.monotonic() + 2.0)
         rec["bytesReceived"] = len(data)
         if data[:1] == b"\x16":
             rec["protocol"] = "tls"
@@ -216,6 +207,8 @@ def handle_tcp(conn, addr):
             rec["host"] = host
             rec["payloadBytes"] = len(body)
             try:
+                conn.setblocking(True)
+                conn.settimeout(0.2)
                 conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             except OSError:
                 pass
@@ -231,13 +224,68 @@ def handle_tcp(conn, addr):
 
 
 def tcp_server():
+    """Event-driven TCP sink (AF-4): one thread, no per-connection thread or
+    process, so held connections cannot exhaust it. Every accepted connection
+    gets its original destination recorded at accept time and is classified
+    when its request is complete, the peer closes, or 2 s pass."""
+    import selectors
+    sel = selectors.DefaultSelector()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0", TCP_PORT))
-    s.listen(128)
+    s.listen(4096)
+    s.setblocking(False)
+    sel.register(s, selectors.EVENT_READ, None)
+    conns = {}  # fileno -> [conn, addr, dst, buf, deadline]
+
+    def close_out(fd):
+        st = conns.pop(fd, None)
+        if st is None:
+            return
+        try:
+            sel.unregister(st[0])
+        except (KeyError, ValueError):
+            pass
+        finish_tcp(st[0], st[1], st[2], st[3])
+
     while True:
-        conn, addr = s.accept()
-        threading.Thread(target=handle_tcp, args=(conn, addr), daemon=True).start()
+        now = time.monotonic()
+        timeout = min([c[4] for c in conns.values()], default=now + 1.0) - now
+        for key, _ in sel.select(timeout=max(0.0, min(timeout, 1.0))):
+            if key.data is None:
+                while True:
+                    try:
+                        conn, addr = s.accept()
+                    except (BlockingIOError, InterruptedError):
+                        break
+                    except OSError as exc:
+                        emit({"type": "sinkhole-error", "detail": str(exc)[:120]})
+                        break
+                    try:
+                        dst = original_dst(conn)
+                    except OSError:
+                        dst = (None, None)
+                    conn.setblocking(False)
+                    conns[conn.fileno()] = [conn, addr, dst, b"", time.monotonic() + CONN_DEADLINE_S]
+                    sel.register(conn, selectors.EVENT_READ, conn.fileno())
+            else:
+                fd = key.data
+                st = conns.get(fd)
+                if st is None:
+                    continue
+                try:
+                    chunk = st[0].recv(min(4096, RECV_LIMIT - len(st[3])))
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    st[3] += chunk
+                if not chunk or request_complete(st[3]):
+                    close_out(fd)
+        now = time.monotonic()
+        for fd in [fd for fd, c in conns.items() if c[4] <= now]:
+            close_out(fd)
 
 
 def main():

@@ -26,7 +26,7 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'Side channels inside the kernel (timing, /proc enumeration) are not observed.',
   'Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
   'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); an npm started by package code is therefore reported as incomplete instrumentation (review).',
-  'Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) is invisible to both the kernel trace and the preload.',
+  'Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) and env reads by other system interpreters in the image (perl, awk) are invisible to both the kernel trace and the preload (DEC-11r5; their file, network and process activity is still traced and judged).',
   'DEC-11r4: a package lifecycle that executes a script directly from /work, /tmp or HOME (e.g. "./install.sh" rather than "sh ./install.sh" or "node x.js") fails the instrumentation marker and gets review (i): the trace cannot tell a script from an ELF binary there (fail closed; narrowed in S2, X8).',
   'Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
@@ -200,7 +200,9 @@ async function analyse(cfg, target, opts = {}) {
       '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--security-opt', 'no-new-privileges',
       '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1', '--sysctl', 'net.ipv6.conf.default.disable_ipv6=1',
       '--sysctl', 'net.ipv4.conf.all.route_localnet=1',
-      '--pids-limit', '64', '--memory', '128m', '--cpus', '0.5',
+      // AF-4: the sinkhole is event-driven (no thread per connection); its own
+      // ceilings sit far above anything the sandbox (pids 64) can open.
+      '--pids-limit', '256', '--memory', '512m', '--memory-swap', '512m', '--cpus', '0.5', '--ulimit', 'nofile=65536:65536',
       '-e', `QP_SANDBOX_UID=${cfg.sandboxUid}`, cfg.images.sinkhole], { allowFail: false });
     const ready = await waitFor(async () => /"type": "ready"/.test((await docker(['logs', sinkName])).stdout), 15000, 200);
     if (!ready) return await finish(abort(receipt, 'infrastructure', 'sinkhole did not become ready', 4));
@@ -266,7 +268,8 @@ async function analyse(cfg, target, opts = {}) {
     // DEC-12r1 (b): the tracer stream ended before the sandbox did: kernel trace incomplete.
     const traceComplete = !(trEndedAt !== null && trEndedAt < sbEndedAt - 1000);
     events.child.kill();
-    await sleep(200);
+    // Connections still open in the sinkhole are recorded at their 2 s deadline.
+    await sleep(2500);
     const evLines = events.stdout.split(/\r?\n/).filter(Boolean);
     const oom = evLines.some((l) => l.startsWith('oom '));
 

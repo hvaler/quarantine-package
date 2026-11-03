@@ -313,6 +313,90 @@ test('self-review: re-exec via /proc/self/exe, the dynamic loader or execveat mu
   }
 });
 
+// ---- repair cycle 3 (AF-4, SR-1..SR-3)
+const harness = ['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40)];
+const SINK_READY = '{"type": "ready", "t": "2026-11-03T21:00:00.000000Z"}\n';
+
+test('AF-4(a): a traced package connect with no sinkhole record fails sinkhole-log (unmatched ids listed)', () => {
+  const ob = mini([
+    ...harness,
+    '40 21:00:00.100000 socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9',
+    '40 21:00:00.100100 connect(9<socket:[1]>, {sa_family=AF_INET, sin_port=htons(80), sin_addr=inet_addr("198.18.0.121")}, 16) = -1 ECONNREFUSED (Connection refused)',
+  ], { out: hb([40]) });
+  const m = markerOf(ob, 'sinkhole-log');
+  assert.equal(m.ok, false);
+  const id = m.detail.unmatchedObservationIds[0];
+  assert.equal(ob.observations.find((o) => o.id === id).dest, '198.18.0.121');
+});
+
+test('AF-4(a): matched connects, npm attempts and local no-route failures keep sinkhole-log ok', () => {
+  const ob = mini([
+    ...harness,
+    '40 21:00:00.100000 socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_IP) = 9',
+    '40 21:00:00.100100 connect(9<socket:[1]>, {sa_family=AF_INET, sin_port=htons(80), sin_addr=inet_addr("198.18.0.1")}, 16) = -1 EINPROGRESS (Operation now in progress)',
+    '40 21:00:00.200000 socket(AF_INET6, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_IP) = 10',
+    '40 21:00:00.200100 connect(10<socket:[2]>, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:db8::1", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network is unreachable)',
+  ], { out: hb([40]), sink: '{"type": "tcp", "srcIp": "172.19.0.2", "srcPort": 1, "dstIp": "198.18.0.1", "dstPort": 80, "protocol": "http", "method": "POST", "payloadBytes": 16, "t": "2026-11-03T21:00:00.150000Z"}' });
+  assert.equal(markerOf(ob, 'sinkhole-log').ok, true);
+  assert.equal(ob.observations.find((o) => o.port === 80).payload, true);
+});
+
+test('AF-4(a): a package DNS query with no sinkhole record fails sinkhole-log', () => {
+  const ob = mini([
+    ...harness,
+    '40 21:00:00.100000 socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 9',
+    '40 21:00:00.100100 connect(9<socket:[1]>, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.11")}, 16) = 0',
+  ], { out: hb([40]) });
+  assert.equal(markerOf(ob, 'sinkhole-log').ok, false);
+});
+
+test('SR-1: a stale task-created link never makes a later file a system binary; unlinking a link is not a write to its target', () => {
+  const ob = mini([
+    ...harness,
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000410 symlink("/usr/bin/sh", "/tmp/l") = 0',
+    '41 21:00:00.000420 unlink("/tmp/l") = 0',
+    '41 21:00:00.000430 openat(AT_FDCWD, "/tmp/l", O_WRONLY|O_CREAT|O_TRUNC, 0755) = 3</tmp/l>',
+    '41 21:00:00.000500 execve("/tmp/l", ["/tmp/l"], ' + ENV_STRIPPED + ') = 0',
+  ], { out: hb([40]) });
+  const m = markerOf(ob, 'instrumentation-heartbeat');
+  assert.equal(m.ok, false);
+  assert.ok(m.detail.reasons[41][0].includes('/tmp/l'));
+  assert.equal(ob.observations.some((o) => o.kind === 'fs-write' && o.path === '/usr/bin/sh'), false);
+});
+
+test('SR-1: a live task-created link to a system binary is not trusted either; rename forgets the link', () => {
+  const live = mini([...harness, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000410 symlink("/usr/bin/sh", "/tmp/l") = 0',
+    '41 21:00:00.000500 execve("/tmp/l", ["/tmp/l"], ' + ENV_STRIPPED + ') = 0'], { out: hb([40]) });
+  assert.equal(markerOf(live, 'instrumentation-heartbeat').ok, false);
+  const renamed = mini([...harness, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000410 symlink("/usr/bin/sh", "/tmp/m") = 0',
+    '41 21:00:00.000420 rename("/tmp/m", "/tmp/n") = 0',
+    '41 21:00:00.000500 execve("/tmp/m", ["/tmp/m"], ' + ENV_STRIPPED + ') = 0'], { out: hb([40]) });
+  assert.equal(markerOf(renamed, 'instrumentation-heartbeat').ok, false);
+});
+
+test('SR-2: /proc/<other pid>/exe is not resolved (opaque); /proc/self/exe still is', () => {
+  const other = mini([...harness, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000500 execve("/proc/40/exe", ["x", "-e", "1"], ' + ENV_OK + ') = 0', preloadOpen(41)], { out: hb([40]) });
+  const m = markerOf(other, 'instrumentation-heartbeat');
+  assert.equal(m.ok, false);
+  assert.match(m.detail.reasons[41][0], /\/proc\/40\/exe/);
+  const self = mini([...harness, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000450 execve("/usr/local/bin/node", ["node", "a.js"], ' + ENV_OK + ') = 0', preloadOpen(41),
+    '41 21:00:00.000500 execve("/proc/self/exe", ["x"], ' + ENV_OK + ') = 0', preloadOpen(41)], { out: hb([40, 41]) });
+  assert.equal(markerOf(self, 'instrumentation-heartbeat').ok, true);
+});
+
+test('SR-3: execveat envp is never trusted, even when it appears to carry the preload flag', () => {
+  const ob = mini([...harness, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+    '41 21:00:00.000500 execveat(3</weird, ["x"], ["NODE_OPTIONS=--require=/opt/qp/preload.cjs"]>, "", ["x"], ' + ENV_OK + ', AT_EMPTY_PATH) = 0', preloadOpen(41)], { out: hb([40, 41]) });
+  const m = markerOf(ob, 'instrumentation-heartbeat');
+  assert.equal(m.ok, false);
+  assert.ok(m.detail.reasons[41].some((s) => /envp not traced/.test(s)));
+});
+
 test('printenv NAME is an env read of NAME', () => {
   const ob = mini(['40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42', '42 21:00:00.000600 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ' + ENV_OK + ') = 0']);
   const r = ob.observations.find((o) => o.kind === 'env-read');

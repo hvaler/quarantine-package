@@ -176,10 +176,12 @@ function analyse(text, opts = {}) {
       case 'execveat': {
         // fexecve / execveat: what runs is identified by an fd, not a checkable path.
         if (c.ret === 0) {
-          const { argv: av, envp } = execArgs(c.args.replace(/^[^,]*,\s*/, ''));
+          // SR-3: the dirfd annotation is package-influenced text, so the argument
+          // split is not trusted: envp is never taken from execveat (null = not
+          // traced), so the instrumentation marker always fails for it.
           exe.set(p, '(execveat)');
-          argv.set(p, av);
-          events.push({ ...base, type: 'exec', path: '(execveat)', rawPath: c.args.slice(0, 120), argv: av, envp, opaque: true });
+          argv.set(p, []);
+          events.push({ ...base, type: 'exec', path: '(execveat)', rawPath: c.args.slice(0, 120), argv: [], envp: null, opaque: true });
         }
         break;
       }
@@ -188,14 +190,18 @@ function analyse(text, opts = {}) {
         if (c.ret === 0) {
           // DEC-11r3: identify what was executed, not its name. The path is resolved
           // against the cwd and through every symlink created during the task.
-          // /proc/<self|thread-self|pid>/exe is the executing process's current binary.
+          // SR-2: only /proc/self/exe and /proc/thread-self/exe are resolved, to the
+          // executing process's own current binary. Another pid's exe can change
+          // under us (TOCTOU), so it stays an unresolved /proc path: opaque.
           let resolved = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
-          const procExe = resolved && /^\/proc\/(self|thread-self|\d+)\/exe$/.exec(resolved);
-          if (procExe) resolved = procExe[1] === 'self' || procExe[1] === 'thread-self' ? (exe.get(p) || null) : (exe.get(tg(Number(procExe[1]))) || null);
+          const procExe = resolved && /^\/proc\/(self|thread-self)\/exe$/.exec(resolved);
+          if (procExe) resolved = exe.get(p) || null;
+          // SR-1: note whether reaching the target needed a symlink the task created.
           const path = resolved ? canonical(resolved) : rawExe;
+          const viaLink = !!(resolved && path !== resolved);
           exe.set(p, path);
           argv.set(p, av);
-          events.push({ ...base, type: 'exec', path, rawPath: rawExe, argv: av, envp });
+          events.push({ ...base, type: 'exec', path, rawPath: rawExe, argv: av, envp, viaLink });
         }
         break;
       }
@@ -271,18 +277,44 @@ function analyse(text, opts = {}) {
           const dir = a.base === 'cwd' ? cwd.get(p) : a.base;
           return { path: dir ? canonical(normalize(`${dir}/${a.str}`, cwd.get(p))) : null, raw: a.str };
         };
+        // Calls that act on the final path component itself (unlink, rmdir,
+        // rename, link, symlink, lstat) do not follow it: resolve the parent
+        // directories through task-created links, but not the last component.
+        const nofollow = (i) => {
+          const a = args[i];
+          if (!a || a.str === null) return { path: null, raw: a ? a.str : null };
+          const dir = a.str.startsWith('/') ? '' : (a.base === 'cwd' ? cwd.get(p) : a.base);
+          if (dir === null || dir === undefined) return { path: null, raw: a.str };
+          const full = normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p));
+          const cut = full.lastIndexOf('/');
+          const parent = cut <= 0 ? '/' : canonical(full.slice(0, cut));
+          return { path: normalize(`${parent}/${full.slice(cut + 1)}`), raw: a.str };
+        };
+        // SR-1: a link is forgotten once its path is unlinked, removed or renamed
+        // (either side of a rename), so a stale mapping can never name a later file.
+        const forget = (r) => { if (r.path) { for (const l of [...links.keys()]) if (l === r.path || l.startsWith(`${r.path}/`)) links.delete(l); } };
         const blocked = c.ret === -1;
         const push = (type, r, extra = {}) => events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra });
         if (c.name === 'openat' || c.name === 'open') {
           push(WRITE_FLAGS.test(c.args) ? 'fs-write' : 'fs-read', at(0));
-        } else if (/^(creat|mkdir|mkdirat|truncate|chmod|fchmodat|unlink|unlinkat|rmdir)$/.test(c.name)) {
+        } else if (/^(unlink|unlinkat|rmdir)$/.test(c.name)) {
+          const r = nofollow(0);
+          push('fs-write', r);
+          if (!blocked) forget(r);
+        } else if (/^(creat|mkdir|mkdirat|truncate|chmod|fchmodat)$/.test(c.name)) {
           push('fs-write', at(0));
-        } else if (/^(rename|renameat2?|link|linkat)$/.test(c.name)) {
-          push('fs-write', at(1));
+        } else if (/^(rename|renameat2?)$/.test(c.name)) {
+          const to = nofollow(1);
+          const from = nofollow(0);
+          push('fs-write', to);
+          push('fs-write', from);
+          if (!blocked) { forget(from); forget(to); }
+        } else if (/^(link|linkat)$/.test(c.name)) {
+          push('fs-write', nofollow(1));
           push('fs-write', at(0));
         } else if (c.name === 'symlink' || c.name === 'symlinkat') {
           // The link itself is a write; its target is an access to whatever it points at.
-          const link = at(args.length - 1);
+          const link = nofollow(args.length - 1);
           push('fs-write', link);
           const target = args[0] && args[0].str !== null
             ? { path: args[0].str.startsWith('/') ? normalize(args[0].str, cwd.get(p)) : (link.path ? normalize(`${link.path}/../${args[0].str}`, cwd.get(p)) : null), raw: args[0].str }
@@ -292,7 +324,7 @@ function analyse(text, opts = {}) {
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
           if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(c.args)) break;
-          push('fs-stat', at(0));
+          push('fs-stat', c.name === 'lstat' || /AT_SYMLINK_NOFOLLOW/.test(c.args) ? nofollow(0) : at(0));
         }
       }
     }
