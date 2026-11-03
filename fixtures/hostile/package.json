@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-hostile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture. Never published. Makes benign attempts that look hostile.",
+  "main": "index.js",
+  "scripts": { "install": "node attempts.js" },
+  "license": "MIT"
+}

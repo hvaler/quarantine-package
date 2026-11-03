@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-netprobe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture. Never published. Network attempts without payload (C2 matrix).",
+  "main": "index.js",
+  "scripts": { "install": "node probe.js" },
+  "license": "MIT"
+}

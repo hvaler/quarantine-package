@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-loop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture. Never published. Install script never ends.",
+  "main": "index.js",
+  "scripts": { "install": "node -e \"for (;;) {}\"" },
+  "license": "MIT"
+}

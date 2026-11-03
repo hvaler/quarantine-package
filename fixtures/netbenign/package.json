@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-netbenign",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture. Never published. A legitimate-looking install script that checks for a binary download (GET, no body).",
+  "main": "index.js",
+  "scripts": { "install": "node check.js" },
+  "license": "MIT"
+}

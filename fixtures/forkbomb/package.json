@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-forkbomb",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture. Never published. Install script is a fork bomb.",
+  "main": "index.js",
+  "scripts": { "install": "sh bomb.sh" },
+  "license": "MIT"
+}
