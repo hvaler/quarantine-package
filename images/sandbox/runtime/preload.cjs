@@ -73,7 +73,10 @@ const proxy = new Proxy(realEnv, {
 // processes are not wrapped. For the orchestrator's own npm this loses
 // nothing (npm's env reads never count). For an npm started by package code,
 // its env reads are not observed: a stated limitation.
-const isNpmCli = /(^|\/)(npm|npm-cli\.js)$/.test(String(process.argv[1] || ''));
+// Only the image's real npm CLI, by exact path (a script merely named "npm" is wrapped).
+// The orchestrator decides from the kernel trace whether an unwrapped process is its own npm.
+const NPM_CLI_PATHS = ['/usr/local/bin/npm', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
+const isNpmCli = NPM_CLI_PATHS.includes(String(process.argv[1] || ''));
 if (isNpmCli) {
   emit({ type: 'preload-note', detail: 'npm CLI process: env not wrapped' });
 } else {

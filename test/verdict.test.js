@@ -89,7 +89,9 @@ test('C4 rule d vs f: payload decides between do-not-install and review', () => 
   assert.equal(decide({ observations: [F.tcp('x.example', 'package', false), F.loadOk()] }).verdict, 'review');
   assert.equal(decide({ observations: [F.dns('x.example'), F.loadOk()] }).verdict, 'review');
   assert.equal(decide({ observations: [{ ...F.tcp('x.example', 'package', null), proto: 'tls' }, F.loadOk()] }).verdict, 'review');
-  assert.equal(decide({ observations: [{ ...F.tcp('x.example', 'package', true), kind: 'net-udp' }, F.loadOk()] }).verdict, 'do-not-install');
+  // DEC-2r1: UDP is (f) review whatever it carries; (d) is TCP only.
+  assert.equal(decide({ observations: [{ ...F.tcp('x.example', 'package', true), kind: 'net-udp' }, F.loadOk()] }).verdict, 'review');
+  assert.equal(decide({ observations: [{ ...F.tcp('x.example', 'package', true), kind: 'net-dns' }, F.loadOk()] }).verdict, 'review');
 });
 
 test('C4 rule e: any limit is do-not-install', () => {

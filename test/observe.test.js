@@ -128,6 +128,93 @@ test('completeness: missing heartbeat, missing trace and abnormal end are report
   assert.equal(e['harness-ran'], false);
 });
 
+// ---- regressions for the commit security review (5abae46)
+
+const mini = (lines, stdout = '') => build({
+  traceText: [
+    '1 21:00:00.000001 clone(child_stack=NULL, flags=SIGCHLD) = 10',
+    '10 21:00:00.000100 execve("/opt/qp/stage.sh", ["/opt/qp/stage.sh", "pkg"], 0x0) = 0',
+    '10 21:00:00.000200 clone(child_stack=NULL, flags=SIGCHLD) = 40',
+    '40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], 0x0) = 0',
+    ...lines,
+  ].join('\n'),
+  sinkholeText: '{"type": "ready", "t": "2026-11-03T21:00:00.000000Z"}\n' + (stdout.sink || ''),
+  stdoutText: stdout.out || '', nonce: NONCE, sandboxEndedNormally: true, sinkholeIp: '172.19.0.2',
+});
+const markerOf = (ob, name) => ob.observations.find((o) => o.kind === 'completeness' && o.marker === name);
+
+test('security: dirfd-relative access resolves through strace -y', () => {
+  const ob = mini(['40 21:00:00.100000 openat(7</home/qp>, ".npmrc", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)']);
+  assert.ok(ob.observations.some((o) => o.kind === 'fs-access' && o.path === '/home/qp/.npmrc'));
+});
+
+test('security: /proc/self/root and symlinks do not hide credential access', () => {
+  const ob = mini([
+    '40 21:00:00.100000 newfstatat(AT_FDCWD, "/proc/self/root/var/run/docker.sock", 0x1, 0) = -1 ENOENT (No such file or directory)',
+    '40 21:00:00.100100 symlink("/home/qp", "/work/l") = 0',
+    '40 21:00:00.100200 openat(AT_FDCWD, "/work/l/.ssh/id_rsa", O_RDONLY) = -1 ENOENT (No such file or directory)',
+  ]);
+  const paths = ob.observations.filter((o) => o.kind === 'fs-access').map((o) => o.path);
+  assert.ok(paths.includes('/var/run/docker.sock'));
+  assert.ok(paths.includes('/home/qp/.ssh/id_rsa'));
+});
+
+test('security: a truncated or unresolvable path fails closed (paths-resolved marker)', () => {
+  const ob = mini(['40 21:00:00.100000 openat(AT_FDCWD, "/home/qp/aaaaaaaa"..., O_RDONLY) = 3']);
+  assert.equal(markerOf(ob, 'paths-resolved').ok, false);
+  const clean = mini(['40 21:00:00.100000 openat(AT_FDCWD, "/work/node_modules/pkg/index.js", O_RDONLY) = 3']);
+  assert.equal(markerOf(clean, 'paths-resolved').ok, true);
+});
+
+test('security: TCP to port 53 carrying bytes is a payload, not DNS', () => {
+  const ob = mini([
+    '40 21:00:00.100000 socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_IP) = 9',
+    '40 21:00:00.100100 connect(9<socket:[1]>, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("203.0.113.9")}, 16) = 0',
+  ], { sink: '{"type": "tcp", "srcIp": "172.19.0.2", "srcPort": 1, "dstIp": "203.0.113.9", "dstPort": 53, "protocol": "unknown", "payloadBytes": 40, "t": "2026-11-03T21:00:00.200000Z"}' });
+  const o = ob.observations.find((x) => x.port === 53);
+  assert.equal(o.kind, 'net-tcp');
+  assert.equal(o.payload, true);
+});
+
+const ENV_OK = '["PATH=/usr/bin", "NODE_OPTIONS=--require=/opt/qp/preload.cjs", "QP_TASK_NONCE=x"]';
+const ENV_STRIPPED = '["PATH=/usr/bin"]';
+const childExec = (env, argv1 = 'child.js') => [
+  '40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 41',
+  `41 21:00:00.000600 execve("/usr/local/bin/node", ["node", "${argv1}"], ${env}) = 0`,
+];
+const preloadOpen = (pid) => `${pid} 21:00:00.000700 openat(AT_FDCWD, "/opt/qp/preload.cjs", O_RDONLY|O_CLOEXEC) = 3</opt/qp/preload.cjs>`;
+const hb = (pids) => pids.map((p) => `QPEV ${NONCE} {"type":"hb","pid":${p}}`).join('\n');
+
+test('security: a forged heartbeat without a traced preload open does not complete the marker', () => {
+  const harnessOnly = (env) => ['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + env + ') = 0'];
+  const forged = mini([], { out: hb([40]) });
+  assert.equal(markerOf(forged, 'instrumentation-heartbeat').ok, false);
+  const real = mini([...harnessOnly(ENV_OK), preloadOpen(40)], { out: hb([40]) });
+  assert.equal(markerOf(real, 'instrumentation-heartbeat').ok, true);
+});
+
+test('security: a child exec with NODE_OPTIONS stripped fails the marker even with a forged heartbeat', () => {
+  const ob = mini(['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40), ...childExec(ENV_STRIPPED)], { out: hb([40, 41]) });
+  const m = markerOf(ob, 'instrumentation-heartbeat');
+  assert.equal(m.ok, false);
+  assert.ok(m.detail.reasons[41].includes('NODE_OPTIONS without the preload'));
+});
+
+test('security: an npm CLI started by package code fails the marker; a script named npm does not count as npm', () => {
+  const base = ['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40)];
+  const npmChild = mini([...base, ...childExec(ENV_OK, '/usr/local/bin/npm'), preloadOpen(41)], { out: hb([40, 41]) });
+  assert.equal(markerOf(npmChild, 'instrumentation-heartbeat').ok, false);
+  const fakeNpm = mini([...base, ...childExec(ENV_OK, '/tmp/npm'), preloadOpen(41)], { out: hb([40, 41]) });
+  assert.equal(markerOf(fakeNpm, 'instrumentation-heartbeat').ok, true);
+});
+
+test('printenv NAME is an env read of NAME', () => {
+  const ob = mini(['40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42', '42 21:00:00.000600 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ' + ENV_OK + ') = 0']);
+  const r = ob.observations.find((o) => o.kind === 'env-read');
+  assert.equal(r.name, 'NPM_TOKEN');
+  assert.equal(r.actor, 'package');
+});
+
 test('every observation carries the DEC-18 fields and the task nonce', () => {
   const ob = run();
   for (const o of ob.observations) {

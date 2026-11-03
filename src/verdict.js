@@ -35,8 +35,8 @@ const RULES = Object.freeze([
   },
   {
     id: 'd', tier: 'do-not-install',
-    text: 'network attempt carrying a payload',
-    match: (o) => isNet(o) && counted(o) && o.payload === true,
+    text: 'network attempt carrying a payload (plaintext HTTP body/POST/PUT/PATCH/chunked, or raw bytes on non-TLS TCP)',
+    match: (o) => o.kind === 'net-tcp' && counted(o) && o.payload === true,
   },
   {
     id: 'e', tier: 'do-not-install',

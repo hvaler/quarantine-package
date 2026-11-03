@@ -96,9 +96,10 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 - Image `qp-sandbox:s1`, `--entrypoint /opt/qp/trace.sh`.
 - Flags: `--pid container:<sandbox>` (shared pid namespace), `--network none`, `--read-only`, `--cap-drop ALL --cap-add SYS_PTRACE`, `--security-opt no-new-privileges`, `--user 0:0`, `--pids-limit 16`.
 - Behaviour:
-  - It runs `strace -f -qq -tt -s 200` over execve/clone/fork, the file syscalls, socket/connect/send* and chdir, attached to the sandbox's pid 1.
+  - It runs `strace -f -qq -tt -y -s 4096` over execve/clone/fork, the file syscalls, socket/connect/send* and chdir, attached to the sandbox's pid 1.
   - The sandbox's pid 1 (`/opt/qp/run.sh`, uid 10001) does nothing until `/proc/self/status` shows a non-zero `TracerPid`. Only then does it copy `/in` to `/work` and exec the staged work.
-  - The wait is bounded at 15 s. Past that it prints `QP-TRACER-MISSING` and exits 95. No package code has run, no limit is recorded, and the markers `kernel-trace` and `ended-normally` are false, so the result is `review` (i).
+  - The wait is bounded at 10 s (DEC-12r1). Past that it prints `QP-TRACER-MISSING` and exits 95, and no package code has run. The task then ends `status: aborted`, `abortReason: tracer-unavailable`, `verdict: null`, CLI exit 4. No limit is recorded.
+  - If the tracer attaches but its stream ends more than 1 s before the sandbox exits, `completeness.kernel-trace` is `{ok: false, detail.state: "incomplete"}`, so the result is `review` (i).
 - **Channel integrity:**
   - The trace exists only as the tracer container's stdout, read by the orchestrator over its `docker start -a` pipe. It is never written to a path in the sandbox.
   - The sandbox (uid 10001, no capabilities) cannot open `/proc/<tracer pid>/fd/*`, ptrace it or signal it, because those are a different uid.
@@ -117,6 +118,11 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
   - HTTP: method, host, path, body length and chunked flag;
   - DNS: query name and type. The answer is a per-name fake address in 198.18.0.0/15, never routed.
 - It answers HTTP with 403 and refuses TLS after the ClientHello. Nothing is forwarded, since the network is internal.
+- **Listeners in the shared namespace:** TCP `0.0.0.0:15001`, UDP `0.0.0.0:15353` (DNS), UDP `0.0.0.0:15354` (other UDP), plus Docker's embedded DNS on `127.0.0.11`. The sinkhole uses no unix sockets, abstract ones included.
+- **What the sandbox can and cannot do in that namespace:**
+  - Every TCP connection and UDP datagram from uid 10001 is redirected by the nat rules, loopback and the sinkhole's own ports included. So any direct attempt to reach a listener is itself logged as an attempt (`orig_dest` 127.0.0.1:<port>), never parsed as a sinkhole record.
+  - uid 10001 can bind free ports in the namespace (Docker sets `ip_unprivileged_port_start=0`). But its own outbound traffic still goes to the sinkhole, and nothing else connects to it.
+  - Sinkhole records are produced only by the sinkhole process. Package-supplied bytes appear only inside JSON-escaped fields (`path`, `host`, `sni`, DNS `name`) of a record whose type and destination the sinkhole sets.
 
 **Trusted channels.**
 
@@ -129,7 +135,8 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 The nonce is per task (`receipt.nonce`). Records with another nonce are dropped and counted in `sandbox.preloadForeignRecords`.
 The nonce is readable by package code in the same process, so QPEV records are forgeable additions:
 - A forged record can only add observations.
-- A forged heartbeat cannot upgrade a verdict, because no rule reads heartbeats except (i), and `kernel-trace` and `ended-normally` come from the tracer and orchestrator only.
+- A forged heartbeat cannot upgrade a verdict. The `instrumentation-heartbeat` marker is decided from the trace: for every node exec, the envp must carry `NODE_OPTIONS=--require=/opt/qp/preload.cjs` (the tracer prints exec envp) and the same pid must open `/opt/qp/preload.cjs`. The QPEV heartbeat is also required, but never sufficient. `kernel-trace` and `ended-normally` come from the tracer and the container exit status only.
+- npm CLI processes (exact paths `/usr/local/bin/npm` or `.../npm/bin/npm-cli.js`) run with env unwrapped. Only the orchestrator's own npm (the trace's npm pid) is accepted that way. An npm CLI started by package code fails `instrumentation-heartbeat`, which gives (i). A script merely named `npm` is wrapped like any other node process.
 - The load record can be forged by package code that already runs inside the harness. This is listed in `knownLimitations`.
 
 ## 4. Actors (DEC-2r1)
@@ -161,7 +168,7 @@ Actors are derived from the process tree in the trace (clone/fork return values,
 | `sandbox.containerId` | the new sandbox's container id; differs on every task |
 | `sandbox.network` | `{name, internal, subnet, enableIPv6}` |
 | `sandbox.roles` | `{stagePid, npmPid, harnessPid, scanPid}` |
-| `completeness` | `{"instrumentation-heartbeat", "kernel-trace", "sinkhole-log", "ended-normally", "harness-ran"}`, each `{ok, detail}` (DEC-11) |
+| `completeness` | `{"instrumentation-heartbeat", "paths-resolved", "kernel-trace", "sinkhole-log", "ended-normally", "harness-ran"}`, each `{ok, detail}` (DEC-11). Rules for two of them: `instrumentation-heartbeat` needs, for every node process, a QPEV heartbeat AND a kernel-traced open of `/opt/qp/preload.cjs` by that pid. `paths-resolved` is false when the tracer could not resolve a path the package read, stat-ed, linked to or connected to (truncated string, unknown dirfd or cwd). `kernel-trace.detail.state` is `complete`, `incomplete` or `missing`. |
 | `harness` | `{mode: "fallback-require (no model in S1)", loaded, detail}` |
 | `explanation` | `{source: "none (no model in S1)", text: null}`; never an input to the verdict |
 | `observations[]` | see below |
@@ -182,7 +189,7 @@ Actors are derived from the process tree in the trace (clone/fork return values,
 | `proc-environ` | open of `/proc/<pid>/environ` | — |
 | `env-read` | read of an env var whose name is key-like (preload) | `name` |
 | `env-enumerate` | full env enumeration by package code, or exec of `env`/`printenv` (c2, observation only) | `rule`, `via` |
-| `net-dns` | DNS attempt (UDP 53 to any address) | `queries[{name, qtype}]`, `sinkholeLogged` |
+| `net-dns` | DNS attempt: UDP 53 to any address. TCP to port 53 is a `net-tcp` attempt and its payload is judged like any TCP | `queries[{name, qtype}]`, `sinkholeLogged` |
 | `net-tcp` | TCP connect to any address and port. `proto` is `http`, `tls`, `unknown` or `none`; HTTP detail in `http{method, host, path, payloadBytes}` | `family`, `sinkholeLogged`, `http` |
 | `net-udp` | UDP datagram other than DNS | `family`, `sinkholeLogged` |
 | `spawn` | exec by package code (first 50) | `argv` |
@@ -191,12 +198,21 @@ Actors are derived from the process tree in the trace (clone/fork return values,
 | `load` | harness result; `ok`, `mode` (`fallback-require`/`fallback-import`), `error`, `resolved` | |
 | `completeness` | one per DEC-11 marker; `marker`, `ok`, `detail` | |
 
-`payload` is `true` in three cases:
+`payload` is `true` in two cases, both TCP only:
 - plaintext HTTP with method POST, PUT or PATCH, or a body (Content-Length > 0), or chunked encoding;
-- raw bytes on a non-HTTP, non-TLS TCP connection;
-- a UDP datagram with bytes.
+- raw bytes on a non-HTTP, non-TLS TCP connection (any port, 53 included).
 
 It is `false` for DNS, for TLS (the body is not inspected) and for a bodiless HTTP GET. It is `null` when the sinkhole has no matching record.
+Rule (d) applies only to `net-tcp`. UDP, DNS included, is always (f) per DEC-2r1; the receipt still shows the bytes in the sinkhole log.
+
+`printenv NAME` (exec by package code) is recorded as an `env-read` of `NAME`, so a key-like name fires (c1). This is pending the analyst's ruling on challenge point 5. Bare `env`/`printenv` is `env-enumerate` (c2).
+
+**Path resolution.**
+- The tracer runs `strace -y -s 4096`, so dirfd-relative paths resolve through the fd's directory.
+- `/proc/<self|pid|thread-self>/root/X` is reported as `X`, and `/proc/self/cwd/X` as `<cwd>/X`.
+- Paths through a symlink created during the task are reported as the path they reach.
+- A symlink whose target is a credential path or docker.sock is itself an `fs-access`.
+- An unresolvable write is recorded with path `unresolved:<raw>`, which counts as outside the allowed areas (a). An unresolvable read, stat, link target or unix connect sets the `paths-resolved` marker to false, which gives (i).
 
 **Allowed write areas:** `/work` and `/tmp` (no rule). Writes to `/dev/null`, `/dev/tty`, `/dev/std*`, `/dev/fd/*` and `/proc/self/fd/*` are not file writes and are not recorded.
 

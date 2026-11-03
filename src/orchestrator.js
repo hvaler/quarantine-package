@@ -25,7 +25,9 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'Paths written through fchdir-relative or unknown directory fds are reported as unresolved and treated as outside the allowed areas.',
   'Side channels inside the kernel (timing, /proc enumeration) are not observed.',
   'Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
-  'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); env reads by an npm started from package code are not observed.',
+  'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); an npm started by package code is therefore reported as incomplete instrumentation (review).',
+  'Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) is invisible to both the kernel trace and the preload.',
+  'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);
 
 const HARNESS_MODE = 'fallback-require (no model in S1)';

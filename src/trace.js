@@ -23,15 +23,48 @@ function splitCall(text) {
   return { name, args, ret, errno: m && m[2] ? m[2] : null };
 }
 
-// Extract quoted C strings from an argument list, in order.
+// Extract quoted C strings from an argument list, in order. A string strace
+// truncated (trailing "...") is returned as null: never trusted as a path.
 function quotedStrings(args) {
+  return pathArgs(args).map((a) => a.str);
+}
+
+// Quoted strings with the directory they are relative to, from strace -y:
+// `AT_FDCWD, "x"` -> base 'cwd'; `3</home/qp>, "x"` -> base '/home/qp'.
+function pathArgs(args) {
   const out = [];
-  const re = /"((?:[^"\\]|\\.)*)"(\.\.\.)?/g;
+  const re = /(?:(AT_FDCWD|\d+<([^>]*)>),\s*)?"((?:[^"\\]|\\.)*)"(\.\.\.)?/g;
   let m;
   while ((m = re.exec(args))) {
-    out.push(m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\'));
+    const str = m[4] ? null : m[3].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    const base = m[1] === undefined ? 'cwd' : m[1] === 'AT_FDCWD' ? 'cwd' : (m[2] && m[2].startsWith('/') ? m[2] : null);
+    out.push({ str, base });
   }
   return out;
+}
+
+// execve("path", ["a", "b"], ["K=V", ...]) -> { path, argv, envp }.
+// envp is null when strace abbreviated it (0x... /* n vars */).
+function execArgs(args) {
+  const groups = [[]];
+  let depth = 0;
+  let i = 0;
+  const unq = (s) => s.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  while (i < args.length) {
+    const ch = args[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < args.length && args[j] !== '"') j += args[j] === '\\' ? 2 : 1;
+      const truncated = args.slice(j + 1, j + 4) === '...';
+      groups[groups.length - 1].push(truncated ? null : unq(args.slice(i + 1, j)));
+      i = j + 1 + (truncated ? 3 : 0);
+      continue;
+    }
+    if (ch === '[') { depth += 1; groups.push([]); }
+    else if (ch === ']') depth -= 1;
+    i += 1;
+  }
+  return { path: groups[0][0] ?? null, argv: groups[1] || [], envp: groups.length > 2 ? groups[2] : null };
 }
 
 function parseLines(text) {
@@ -65,17 +98,25 @@ function parseLines(text) {
 
 function resolvePath(cwd, p) {
   if (!p) return null;
-  if (p.startsWith('/')) return normalize(p);
+  if (p.startsWith('/')) return normalize(p, cwd);
   if (!cwd) return null;
-  return normalize(`${cwd}/${p}`);
+  return normalize(`${cwd}/${p}`, cwd);
 }
 
-function normalize(p) {
+function normalize(p, cwd) {
   const parts = [];
   for (const seg of p.split('/')) {
     if (!seg || seg === '.') continue;
     if (seg === '..') parts.pop();
     else parts.push(seg);
+  }
+  // /proc/<self|pid|thread-self>/root/X is X inside the sandbox (single mount namespace).
+  if (parts[0] === 'proc' && parts[2] === 'root' && /^(self|thread-self|\d+)$/.test(parts[1] || '')) {
+    return normalize(`/${parts.slice(3).join('/')}`, cwd);
+  }
+  // /proc/self/cwd/X is X relative to the caller's cwd, when known.
+  if (parts[0] === 'proc' && parts[2] === 'cwd' && /^(self|thread-self)$/.test(parts[1] || '') && cwd) {
+    return normalize(`${cwd}/${parts.slice(3).join('/')}`, null);
   }
   return `/${parts.join('/')}`;
 }
@@ -94,6 +135,21 @@ function analyse(text, opts = {}) {
   const sockType = new Map(); // `${tg}:${fd}` -> 'stream' | 'dgram'
   const events = [];
   const tg = (pid) => tgid.get(pid) || pid;
+  // Symlinks created during the task: a later path through a link is reported
+  // as the path it reaches (so /work/l/.npmrc with l -> /home/qp is /home/qp/.npmrc).
+  const links = new Map();
+  const canonical = (path) => {
+    let cur = path;
+    for (let i = 0; i < 16; i++) {
+      let next = null;
+      for (const [l, t] of links) {
+        if (cur === l || cur.startsWith(`${l}/`)) { next = normalize(t + cur.slice(l.length)); break; }
+      }
+      if (!next || next === cur) return cur;
+      cur = next;
+    }
+    return cur;
+  };
 
   for (const c of calls) {
     const p = tg(c.pid);
@@ -118,11 +174,11 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'execve': {
-        const strs = quotedStrings(c.args);
+        const { path, argv: av, envp } = execArgs(c.args);
         if (c.ret === 0) {
-          exe.set(p, strs[0]);
-          argv.set(p, strs.slice(1));
-          events.push({ ...base, type: 'exec', path: strs[0], argv: strs.slice(1) });
+          exe.set(p, path);
+          argv.set(p, av);
+          events.push({ ...base, type: 'exec', path, argv: av, envp });
         }
         break;
       }
@@ -131,7 +187,9 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'fchdir': {
-        if (c.ret === 0) cwd.set(p, null);
+        // strace -y prints the directory behind the fd: fchdir(3</work/x>)
+        const d = /^\d+<([^>]*)>/.exec(c.args);
+        if (c.ret === 0) cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null);
         break;
       }
       case 'socket': {
@@ -145,9 +203,12 @@ function analyse(text, opts = {}) {
       case 'connect': case 'sendto': case 'sendmsg': case 'sendmmsg': {
         const fd = Number(/^(\d+)/.exec(c.args)?.[1]);
         const st = sockType.get(`${p}:${fd}`) || { type: 'unknown', fam: 'unknown' };
-        const unix = /sun_path="((?:[^"\\]|\\.)*)"/.exec(c.args);
+        const unix = /sun_path=(@?)"((?:[^"\\]|\\.)*)"(\.\.\.)?/.exec(c.args);
         if (unix) {
-          events.push({ ...base, type: 'net-unix', path: unix[1], blocked: c.ret === -1 });
+          // Abstract sockets (@name) have no path; truncated or relative-without-cwd paths are unresolved.
+          const raw = unix[3] ? null : unix[2];
+          const path = unix[1] || raw === null ? null : resolvePath(cwd.get(p), raw);
+          events.push({ ...base, type: 'net-unix', path, rawPath: raw, abstract: !!unix[1], unresolved: !unix[1] && path === null, blocked: c.ret === -1 });
           break;
         }
         const port = /sin6?_port=htons\((\d+)\)/.exec(c.args);
@@ -166,28 +227,38 @@ function analyse(text, opts = {}) {
         break;
       }
       default: {
-        const strs = quotedStrings(c.args);
-        const atCwd = /^AT_FDCWD/.test(c.args);
-        const relTo = (s) => (s && !s.startsWith('/') && !atCwd && /^(openat|mkdirat|unlinkat|renameat2?|symlinkat|linkat|fchmodat|faccessat2?|newfstatat|statx)$/.test(c.name) ? null : resolvePath(cwd.get(p), s));
+        const args = pathArgs(c.args);
+        // Resolve a path argument against its dirfd (strace -y) or the cwd.
+        // Truncated strings and unknown dirfds give null: unresolved, never trusted.
+        const at = (i) => {
+          const a = args[i];
+          if (!a || a.str === null) return { path: null, raw: a ? a.str : null };
+          if (a.str.startsWith('/')) return { path: canonical(normalize(a.str, cwd.get(p))), raw: a.str };
+          const dir = a.base === 'cwd' ? cwd.get(p) : a.base;
+          return { path: dir ? canonical(normalize(`${dir}/${a.str}`, cwd.get(p))) : null, raw: a.str };
+        };
         const blocked = c.ret === -1;
+        const push = (type, r, extra = {}) => events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra });
         if (c.name === 'openat' || c.name === 'open') {
-          const path = relTo(strs[0]);
-          const write = WRITE_FLAGS.test(c.args);
-          events.push({ ...base, type: write ? 'fs-write' : 'fs-read', path, rawPath: strs[0], blocked });
-        } else if (c.name === 'creat' || c.name === 'mkdir' || c.name === 'mkdirat' || c.name === 'truncate' || c.name === 'chmod' || c.name === 'fchmodat' || c.name === 'unlink' || c.name === 'unlinkat' || c.name === 'rmdir') {
-          const path = relTo(strs[0]);
-          events.push({ ...base, type: 'fs-write', path, rawPath: strs[0], blocked });
+          push(WRITE_FLAGS.test(c.args) ? 'fs-write' : 'fs-read', at(0));
+        } else if (/^(creat|mkdir|mkdirat|truncate|chmod|fchmodat|unlink|unlinkat|rmdir)$/.test(c.name)) {
+          push('fs-write', at(0));
         } else if (/^(rename|renameat2?|link|linkat)$/.test(c.name)) {
-          const path = relTo(strs[1]);
-          events.push({ ...base, type: 'fs-write', path, rawPath: strs[1], blocked });
-          const src = relTo(strs[0]);
-          events.push({ ...base, type: 'fs-write', path: src, rawPath: strs[0], blocked });
+          push('fs-write', at(1));
+          push('fs-write', at(0));
         } else if (c.name === 'symlink' || c.name === 'symlinkat') {
-          const path = relTo(strs[strs.length - 1]);
-          events.push({ ...base, type: 'fs-write', path, rawPath: strs[strs.length - 1], blocked });
+          // The link itself is a write; its target is an access to whatever it points at.
+          const link = at(args.length - 1);
+          push('fs-write', link);
+          const target = args[0] && args[0].str !== null
+            ? { path: args[0].str.startsWith('/') ? normalize(args[0].str, cwd.get(p)) : (link.path ? normalize(`${link.path}/../${args[0].str}`, cwd.get(p)) : null), raw: args[0].str }
+            : { path: null, raw: null };
+          push('fs-link-target', target);
+          if (!blocked && link.path && target.path) links.set(link.path, target.path);
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
-          const path = relTo(strs[0]);
-          if (path || strs[0]) events.push({ ...base, type: 'fs-stat', path, rawPath: strs[0], blocked });
+          // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
+          if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(c.args)) break;
+          push('fs-stat', at(0));
         }
       }
     }
@@ -196,4 +267,4 @@ function analyse(text, opts = {}) {
   return { calls: calls.length, tgid, parent, exe, argv, events };
 }
 
-module.exports = { analyse, parseLines, splitCall, quotedStrings, normalize };
+module.exports = { analyse, parseLines, splitCall, quotedStrings, normalize, execArgs };

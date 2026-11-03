@@ -5,7 +5,8 @@
 const { analyse } = require('./trace');
 const { DOCKER_SOCKETS, CREDENTIAL_PATHS } = require('./verdict');
 
-const DEVICE_SINKS = ['/dev/null', '/dev/tty', '/dev/stdout', '/dev/stderr', '/dev/fd', '/proc/self/fd', '/proc/thread-self/fd'];
+const NPM_CLI_PATHS = ['/usr/local/bin/npm', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
+const DEVICE_SINKS =['/dev/null', '/dev/tty', '/dev/stdout', '/dev/stderr', '/dev/fd', '/proc/self/fd', '/proc/thread-self/fd'];
 const MAX_ALLOWED_AREA_WRITES = 200;
 const MAX_SPAWNS = 50;
 
@@ -129,9 +130,16 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   // ---- credential / docker.sock access and /proc/<pid>/environ
   const sensitive = (p) => DOCKER_SOCKETS.includes(p) || CREDENTIAL_PATHS.some((c) => under(p, c));
   const seenAccess = new Set();
-  for (const e of tr.events.filter((x) => x.type === 'fs-read' || x.type === 'fs-stat' || x.type === 'fs-write' || x.type === 'net-unix')) {
+  const unresolvedAccess = [];
+  for (const e of tr.events.filter((x) => x.type === 'fs-read' || x.type === 'fs-stat' || x.type === 'fs-write' || x.type === 'net-unix' || x.type === 'fs-link-target')) {
     const actor = forRules(actorOf(e.pid));
     if (!COUNTED.has(actor)) continue;
+    // A path the tracer could not resolve (truncated, unknown dirfd/cwd) cannot be
+    // cleared: it makes the observation incomplete (DEC-11 -> review), fail-closed.
+    if (e.unresolved && e.type !== 'fs-write') {
+      if (unresolvedAccess.length < 20) unresolvedAccess.push({ pid: e.pid, syscall: e.syscall, rawPath: e.rawPath === null ? '(truncated)' : String(e.rawPath).slice(0, 200) });
+      continue;
+    }
     if (e.path && /^\/proc\/(\d+|self|thread-self)\/environ$/.test(e.path)) {
       add({ kind: 'proc-environ', actor, pid: e.pid, exe: exeOf(e.pid), path: e.path, blocked: e.blocked });
       continue;
@@ -174,7 +182,9 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   for (const e of netEvents) {
     const actor = forRules(actorOf(e.pid));
     const recs = sinkByTrace.get(e) || [];
-    const isDns = e.port === 53;
+    // Only UDP 53 is DNS. TCP to port 53 is an ordinary TCP attempt whose
+    // payload is judged from the sinkhole record like any other port.
+    const isDns = e.port === 53 && e.proto === 'udp';
     if (isDns) {
       const names = [...new Set(recs.map((r) => r.name).filter(Boolean))];
       add({ kind: 'net-dns', actor, pid: e.pid, exe: exeOf(e.pid), dest: names.join(',') || null, orig_dest: `${e.ip}:${e.port}`, port: 53, proto: e.proto, blocked: e.blocked, payload: false,
@@ -218,6 +228,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     if (/\/(env|printenv)$/.test(e.path) && e.argv.length <= 1) {
       add({ kind: 'env-enumerate', actor, pid: e.pid, exe: e.path, extra: { rule: 'c2 (observation only)', via: 'exec' } });
     }
+    // `printenv NAME` reads one specific variable: an env read (c1 when NAME is key-like).
+    if (/\/printenv$/.test(e.path)) {
+      for (const name of e.argv.slice(1).filter((a) => typeof a === 'string' && !a.startsWith('-'))) {
+        add({ kind: 'env-read', actor, pid: e.pid, exe: e.path, extra: { name, via: 'exec printenv' } });
+      }
+    }
     spawns += 1;
     if (spawns <= MAX_SPAWNS) add({ kind: 'spawn', actor, pid: e.pid, exe: e.path, extra: { argv: e.argv.slice(0, 6).map((a) => a.slice(0, 120)) } });
   }
@@ -238,11 +254,33 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   add({ kind: 'load', actor: 'harness', pid: load ? load.pid : roles.harnessPid, extra: { ok: !!(load && load.ok), mode: load ? load.mode : null, error: load ? load.error || null : 'no load record from the harness', resolved: load ? load.resolved : null } });
 
   // ---- completeness markers (DEC-11)
+  // A heartbeat counts only if the kernel trace shows that same process opening
+  // the preload: a forged QPEV heartbeat alone cannot complete this marker.
+  // A node process counts as instrumented only when the kernel trace shows
+  // (1) its exec envp carries NODE_OPTIONS with the preload, (2) the same pid
+  // opening the preload, and (3) it is not an npm CLI other than the
+  // orchestrator's own npm (npm runs with env unwrapped). The QPEV heartbeat
+  // is required too, but alone it can be forged and never suffices.
   const heartbeats = new Set(pre.filter((x) => x.type === 'hb').map((x) => x.pid));
-  const nodePids = [...new Set(tr.events.filter((x) => x.type === 'exec' && /\/node$/.test(x.path)).map((x) => x.pid))];
-  const missingHb = nodePids.filter((p) => !heartbeats.has(p));
+  const preloadOpened = new Set(tr.events.filter((x) => x.type === 'fs-read' && x.path === '/opt/qp/preload.cjs' && !x.blocked).map((x) => x.pid));
+  const lastNodeExec = new Map();
+  for (const x of tr.events) if (x.type === 'exec' && /\/node$/.test(x.path)) lastNodeExec.set(x.pid, x);
+  const nodePids = [...lastNodeExec.keys()];
+  const reasons = {};
+  for (const [pid, x] of lastNodeExec) {
+    const r = [];
+    const envOpts = (x.envp || []).filter((v) => typeof v === 'string' && v.startsWith('NODE_OPTIONS='));
+    if (x.envp === null) r.push('envp not traced');
+    else if (!envOpts.some((v) => /(^|\s|=)--require[= ]\/opt\/qp\/preload\.cjs(\s|$)/.test(v))) r.push('NODE_OPTIONS without the preload');
+    if (!preloadOpened.has(pid)) r.push('preload not opened');
+    if (!heartbeats.has(pid)) r.push('no heartbeat');
+    if (NPM_CLI_PATHS.includes(x.argv[1]) && pid !== roles.npmPid) r.push('npm CLI started by package code (env not wrapped)');
+    if (r.length) reasons[pid] = r;
+  }
+  const missingHb = Object.keys(reasons).map(Number);
   const markers = {
-    'instrumentation-heartbeat': { ok: nodePids.length > 0 && missingHb.length === 0, detail: { nodeProcesses: nodePids.length, missing: missingHb } },
+    'instrumentation-heartbeat': { ok: nodePids.length > 0 && missingHb.length === 0, detail: { nodeProcesses: nodePids.length, missing: missingHb, reasons } },
+    'paths-resolved': { ok: unresolvedAccess.length === 0, detail: { unresolved: unresolvedAccess } },
     'kernel-trace': {
       ok: tr.calls > 0 && roles.stagePid !== null && traceComplete,
       detail: { syscalls: tr.calls, state: tr.calls === 0 || roles.stagePid === null ? 'missing' : traceComplete ? 'complete' : 'incomplete' },
