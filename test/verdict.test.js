@@ -94,6 +94,12 @@ test('C4 rule d vs f: payload decides between do-not-install and review', () => 
   assert.equal(decide({ observations: [{ ...F.tcp('x.example', 'package', true), kind: 'net-dns' }, F.loadOk()] }).verdict, 'review');
 });
 
+test('C4 rule f: a bind/listen in the sandbox namespace is review', () => {
+  const r = decide({ observations: [{ ...F.dns('x'), kind: 'net-listen', port: 53, payload: false }, F.loadOk()] });
+  assert.equal(r.verdict, 'review');
+  assert.deepEqual(ids(r), ['f']);
+});
+
 test('C4 rule e: any limit is do-not-install', () => {
   for (const reason of ['wall-clock', 'pids', 'memory']) {
     const r = decide({ observations: [F.limit(reason), F.loadOk()] });

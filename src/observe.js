@@ -3,7 +3,7 @@
 'use strict';
 
 const { analyse } = require('./trace');
-const { DOCKER_SOCKETS, CREDENTIAL_PATHS } = require('./verdict');
+const { DOCKER_SOCKETS, CREDENTIAL_PATHS, KEY_LIKE } = require('./verdict');
 
 const NPM_CLI_PATHS = ['/usr/local/bin/npm', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
 const DEVICE_SINKS =['/dev/null', '/dev/tty', '/dev/stdout', '/dev/stderr', '/dev/fd', '/proc/self/fd', '/proc/thread-self/fd'];
@@ -209,6 +209,13 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
       extra: { sinkholeLogged: true, note: 'seen by the sinkhole with no matching kernel-trace record' } });
   }
 
+  // ---- binds and listens in the shared namespace (r2 point 7): a listen attempt, rule (f)
+  for (const e of tr.events.filter((x) => x.type === 'net-bind' || x.type === 'net-listen')) {
+    const actor = forRules(actorOf(e.pid));
+    if (!COUNTED.has(actor)) continue;
+    add({ kind: 'net-listen', actor, pid: e.pid, exe: exeOf(e.pid), dest: e.ip, port: e.port, proto: e.proto, path: e.path || null, blocked: e.blocked, payload: false, extra: { syscall: e.syscall } });
+  }
+
   // ---- env access (preload) and env enumeration via env/printenv
   for (const p of pre.filter((x) => x.type === 'env-read' || x.type === 'env-enumerate')) {
     const procActor = actorOf(p.pid);
@@ -228,10 +235,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     if (/\/(env|printenv)$/.test(e.path) && e.argv.length <= 1) {
       add({ kind: 'env-enumerate', actor, pid: e.pid, exe: e.path, extra: { rule: 'c2 (observation only)', via: 'exec' } });
     }
-    // `printenv NAME` reads one specific variable: an env read (c1 when NAME is key-like).
-    if (/\/printenv$/.test(e.path)) {
-      for (const name of e.argv.slice(1).filter((a) => typeof a === 'string' && !a.startsWith('-'))) {
-        add({ kind: 'env-read', actor, pid: e.pid, exe: e.path, extra: { name, via: 'exec printenv' } });
+    // DEC-2r2: an exec of printenv or env whose argv names a variable is an env
+    // read of that name (c1 when key-like). `env A=b cmd` assignments are not reads.
+    if (/\/(printenv|env)$/.test(e.path)) {
+      for (const name of e.argv.slice(1).filter((a) => typeof a === 'string' && a && !a.startsWith('-') && !a.includes('=') && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(a))) {
+        if (/\/env$/.test(e.path) && !KEY_LIKE.test(name)) continue; // env's other args are a command, not a variable
+        add({ kind: 'env-read', actor, pid: e.pid, exe: e.path, extra: { name, via: `exec ${e.path.split('/').pop()}` } });
       }
     }
     spawns += 1;
@@ -274,7 +283,9 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     else if (!envOpts.some((v) => /(^|\s|=)--require[= ]\/opt\/qp\/preload\.cjs(\s|$)/.test(v))) r.push('NODE_OPTIONS without the preload');
     if (!preloadOpened.has(pid)) r.push('preload not opened');
     if (!heartbeats.has(pid)) r.push('no heartbeat');
-    if (NPM_CLI_PATHS.includes(x.argv[1]) && pid !== roles.npmPid) r.push('npm CLI started by package code (env not wrapped)');
+    const roleVar = (x.envp || []).find((v) => typeof v === 'string' && v.startsWith('QP_ROLE='));
+    if (roleVar === 'QP_ROLE=npm' && pid !== roles.npmPid) r.push('QP_ROLE=npm on a process that is not the orchestrator\'s npm (env would be unwrapped)');
+    if (NPM_CLI_PATHS.includes(x.argv[1]) && pid !== roles.npmPid) r.push('npm CLI started by package code');
     if (r.length) reasons[pid] = r;
   }
   const missingHb = Object.keys(reasons).map(Number);

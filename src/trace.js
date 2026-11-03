@@ -200,6 +200,23 @@ function analyse(text, opts = {}) {
         }
         break;
       }
+      case 'bind': case 'listen': {
+        const fd = Number(/^(\d+)/.exec(c.args)?.[1]);
+        const st = sockType.get(`${p}:${fd}`) || { type: 'unknown', fam: 'unknown' };
+        if (c.name === 'listen') {
+          events.push({ ...base, type: 'net-listen', proto: st.type === 'dgram' ? 'udp' : 'tcp', port: null, ip: null, blocked: c.ret === -1 });
+          break;
+        }
+        const unixB = /sun_path=(@?)"((?:[^"\\]|\\.)*)"/.exec(c.args);
+        if (unixB) { events.push({ ...base, type: 'net-bind', proto: 'unix', path: unixB[1] ? `@${unixB[2]}` : unixB[2], port: null, ip: null, blocked: c.ret === -1 }); break; }
+        const port = /sin6?_port=htons\((\d+)\)/.exec(c.args);
+        const ip4 = /sin_addr=inet_addr\("([0-9.]+)"\)/.exec(c.args);
+        // An ephemeral bind (port 0, e.g. implicit UDP send) is not a listener.
+        if (port && Number(port[1]) > 0) {
+          events.push({ ...base, type: 'net-bind', proto: st.type === 'dgram' ? 'udp' : 'tcp', port: Number(port[1]), ip: ip4 ? ip4[1] : null, blocked: c.ret === -1 });
+        }
+        break;
+      }
       case 'connect': case 'sendto': case 'sendmsg': case 'sendmmsg': {
         const fd = Number(/^(\d+)/.exec(c.args)?.[1]);
         const st = sockType.get(`${p}:${fd}`) || { type: 'unknown', fam: 'unknown' };

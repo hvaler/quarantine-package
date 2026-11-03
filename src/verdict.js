@@ -12,7 +12,7 @@ const COUNTED_ACTORS = new Set(['package', 'unattributed']);
 
 const under = (p, root) => typeof p === 'string' && (p === root || p.startsWith(`${root}/`));
 const counted = (o) => COUNTED_ACTORS.has(o.actor);
-const isNet = (o) => o.kind === 'net-dns' || o.kind === 'net-tcp' || o.kind === 'net-udp' || o.kind === 'net-other';
+const isNet = (o) => o.kind === 'net-dns' || o.kind === 'net-tcp' || o.kind === 'net-udp' || o.kind === 'net-other' || o.kind === 'net-listen';
 
 // Ordered by severity; the first tier with a firing rule wins.
 const RULES = Object.freeze([
@@ -45,7 +45,7 @@ const RULES = Object.freeze([
   },
   {
     id: 'f', tier: 'review',
-    text: 'network attempt (DNS, TCP or UDP, TLS included; TLS bodies are not inspected)',
+    text: 'network attempt (DNS, TCP or UDP, TLS included; TLS bodies are not inspected), or a bind/listen in the sandbox network namespace',
     match: (o) => isNet(o) && counted(o),
   },
   {

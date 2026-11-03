@@ -73,11 +73,12 @@ const proxy = new Proxy(realEnv, {
 // processes are not wrapped. For the orchestrator's own npm this loses
 // nothing (npm's env reads never count). For an npm started by package code,
 // its env reads are not observed: a stated limitation.
-// Only the image's real npm CLI, by exact path (a script merely named "npm" is wrapped).
-// The orchestrator decides from the kernel trace whether an unwrapped process is its own npm.
-const NPM_CLI_PATHS = ['/usr/local/bin/npm', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
-const isNpmCli = NPM_CLI_PATHS.includes(String(process.argv[1] || ''));
-if (isNpmCli) {
+// Only the process the stage script started with QP_ROLE=npm is left unwrapped
+// (never decided by path, name or title). QP_ROLE is deleted above, so npm's
+// children never inherit it. A package that sets QP_ROLE itself gains nothing:
+// the orchestrator checks every node exec's envp in the kernel trace, and any
+// exec carrying QP_ROLE=npm other than its own npm pid fails instrumentation.
+if (role === 'npm') {
   emit({ type: 'preload-note', detail: 'npm CLI process: env not wrapped' });
 } else {
   try {

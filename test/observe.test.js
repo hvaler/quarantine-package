@@ -208,6 +208,41 @@ test('security: an npm CLI started by package code fails the marker; a script na
   assert.equal(markerOf(fakeNpm, 'instrumentation-heartbeat').ok, true);
 });
 
+test('security (r2 point 4): a child carrying QP_ROLE=npm fails the marker', () => {
+  const base = ['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40)];
+  const env = '["NODE_OPTIONS=--require=/opt/qp/preload.cjs", "QP_ROLE=npm"]';
+  const ob = mini([...base, ...childExec(env, '/work/x.js'), preloadOpen(41)], { out: hb([40, 41]) });
+  const m = markerOf(ob, 'instrumentation-heartbeat');
+  assert.equal(m.ok, false);
+  assert.match(m.detail.reasons[41].join(' '), /QP_ROLE=npm/);
+});
+
+test('DEC-2r2: env/printenv naming a key-like variable is an env read; bare env is enumeration', () => {
+  const ob = mini([
+    '40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42',
+    '42 21:00:00.000600 execve("/usr/bin/env", ["env", "NPM_TOKEN"], ' + ENV_OK + ') = 0',
+    '40 21:00:00.000700 clone(child_stack=NULL, flags=SIGCHLD) = 43',
+    '43 21:00:00.000800 execve("/usr/bin/env", ["env", "NODE_ENV=production", "node", "build.js"], ' + ENV_OK + ') = 0',
+    '40 21:00:00.000900 clone(child_stack=NULL, flags=SIGCHLD) = 44',
+    '44 21:00:00.001000 execve("/usr/bin/env", ["env"], ' + ENV_OK + ') = 0',
+  ]);
+  assert.deepEqual(ob.observations.filter((o) => o.kind === 'env-read').map((o) => o.name), ['NPM_TOKEN']);
+  assert.equal(ob.observations.filter((o) => o.kind === 'env-enumerate').length, 1);
+});
+
+test('r2 point 7: a bind to a fixed port and a listen are net-listen observations; ephemeral binds are not', () => {
+  const ob = mini([
+    '40 21:00:00.100000 socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_IP) = 9',
+    '40 21:00:00.100100 bind(9<socket:[1]>, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("0.0.0.0")}, 16) = 0',
+    '40 21:00:00.100200 listen(9<socket:[1]>, 511) = 0',
+    '40 21:00:00.100300 socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, IPPROTO_IP) = 10',
+    '40 21:00:00.100400 bind(10<socket:[2]>, {sa_family=AF_INET, sin_port=htons(0), sin_addr=inet_addr("0.0.0.0")}, 16) = 0',
+  ]);
+  const l = ob.observations.filter((o) => o.kind === 'net-listen');
+  assert.equal(l.length, 2);
+  assert.equal(l[0].port, 53);
+});
+
 test('printenv NAME is an env read of NAME', () => {
   const ob = mini(['40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42', '42 21:00:00.000600 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ' + ENV_OK + ') = 0']);
   const r = ob.observations.find((o) => o.kind === 'env-read');

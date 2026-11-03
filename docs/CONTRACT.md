@@ -121,7 +121,8 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 - **Listeners in the shared namespace:** TCP `0.0.0.0:15001`, UDP `0.0.0.0:15353` (DNS), UDP `0.0.0.0:15354` (other UDP), plus Docker's embedded DNS on `127.0.0.11`. The sinkhole uses no unix sockets, abstract ones included.
 - **What the sandbox can and cannot do in that namespace:**
   - Every TCP connection and UDP datagram from uid 10001 is redirected by the nat rules, loopback and the sinkhole's own ports included. So any direct attempt to reach a listener is itself logged as an attempt (`orig_dest` 127.0.0.1:<port>), never parsed as a sinkhole record.
-  - uid 10001 can bind free ports in the namespace (Docker sets `ip_unprivileged_port_start=0`). But its own outbound traffic still goes to the sinkhole, and nothing else connects to it.
+  - uid 10001 can bind free ports in the namespace (Docker sets `ip_unprivileged_port_start=0`). Its own outbound traffic still goes to the sinkhole and nothing else connects to it. Every such bind or listen is traced and recorded as a `net-listen` observation, giving (f) (ruling r2.7).
+  - Sinkhole records reach the orchestrator only through the sinkhole container's stdout (`docker logs`), never over a socket the sandbox can reach.
   - Sinkhole records are produced only by the sinkhole process. Package-supplied bytes appear only inside JSON-escaped fields (`path`, `host`, `sni`, DNS `name`) of a record whose type and destination the sinkhole sets.
 
 **Trusted channels.**
@@ -136,7 +137,10 @@ The nonce is per task (`receipt.nonce`). Records with another nonce are dropped 
 The nonce is readable by package code in the same process, so QPEV records are forgeable additions:
 - A forged record can only add observations.
 - A forged heartbeat cannot upgrade a verdict. The `instrumentation-heartbeat` marker is decided from the trace: for every node exec, the envp must carry `NODE_OPTIONS=--require=/opt/qp/preload.cjs` (the tracer prints exec envp) and the same pid must open `/opt/qp/preload.cjs`. The QPEV heartbeat is also required, but never sufficient. `kernel-trace` and `ended-normally` come from the tracer and the container exit status only.
-- npm CLI processes (exact paths `/usr/local/bin/npm` or `.../npm/bin/npm-cli.js`) run with env unwrapped. Only the orchestrator's own npm (the trace's npm pid) is accepted that way. An npm CLI started by package code fails `instrumentation-heartbeat`, which gives (i). A script merely named `npm` is wrapped like any other node process.
+- npm identity (ruling r2.4) is decided only from the trace. The preload leaves env unwrapped only in the process the stage script starts with `QP_ROLE=npm`; it then deletes `QP_ROLE`, so children never inherit it. No path, name or title is used. In the trace, two kinds of node exec fail `instrumentation-heartbeat`, giving (i):
+  - an exec whose envp carries `QP_ROLE=npm` but whose pid is not the orchestrator's npm pid;
+  - an npm CLI exec (`/usr/local/bin/npm`, `.../npm/bin/npm-cli.js`) by any pid other than that one.
+  A package-started npm is package code.
 - The load record can be forged by package code that already runs inside the harness. This is listed in `knownLimitations`.
 
 ## 4. Actors (DEC-2r1)
@@ -192,6 +196,7 @@ Actors are derived from the process tree in the trace (clone/fork return values,
 | `net-dns` | DNS attempt: UDP 53 to any address. TCP to port 53 is a `net-tcp` attempt and its payload is judged like any TCP | `queries[{name, qtype}]`, `sinkholeLogged` |
 | `net-tcp` | TCP connect to any address and port. `proto` is `http`, `tls`, `unknown` or `none`; HTTP detail in `http{method, host, path, payloadBytes}` | `family`, `sinkholeLogged`, `http` |
 | `net-udp` | UDP datagram other than DNS | `family`, `sinkholeLogged` |
+| `net-listen` | bind to a fixed port or listen in the sandbox's network namespace (rule f) | `syscall` |
 | `spawn` | exec by package code (first 50) | `argv` |
 | `pids-exhaustion` | fork/clone failed with EAGAIN | `failedForks` |
 | `limit` | the task ended by a limit | `reason`, `detail` |
@@ -205,7 +210,12 @@ Actors are derived from the process tree in the trace (clone/fork return values,
 It is `false` for DNS, for TLS (the body is not inspected) and for a bodiless HTTP GET. It is `null` when the sinkhole has no matching record.
 Rule (d) applies only to `net-tcp`. UDP, DNS included, is always (f) per DEC-2r1; the receipt still shows the bytes in the sinkhole log.
 
-`printenv NAME` (exec by package code) is recorded as an `env-read` of `NAME`, so a key-like name fires (c1). This is pending the analyst's ruling on challenge point 5. Bare `env`/`printenv` is `env-enumerate` (c2).
+DEC-2r2 covers env and printenv executed by package code:
+- `printenv NAME` is recorded as an `env-read` of `NAME`, as is `env NAME` when `NAME` is key-like (other `env` arguments are a command or assignments). A key-like name fires (c1).
+- Bare `env` or `printenv` is `env-enumerate` (c2).
+- Shell-builtin expansion (`$VAR`) is invisible and is listed in `knownLimitations`.
+
+`net-listen` is a `bind` to a fixed port (>0) or a `listen` by package code in the sandbox's network namespace, giving (f). Ephemeral binds (port 0) are not recorded.
 
 **Path resolution.**
 - The tracer runs `strace -y -s 4096`, so dirfd-relative paths resolve through the fd's directory.
