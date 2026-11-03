@@ -397,6 +397,30 @@ test('SR-3: execveat envp is never trusted, even when it appears to carry the pr
   assert.ok(m.detail.reasons[41].some((s) => /envp not traced/.test(s)));
 });
 
+test('AF-5: strace ordering (child exec printed before the parent\'s clone return) cannot turn /proc/self/exe into a system binary', () => {
+  // sh (pid 50) vforks node (pid 60); the child's execve is printed before the
+  // parent's clone return. Node (60) then forks 61, which execs /proc/self/exe
+  // with the env stripped. Same for both print orders of the second clone.
+  for (const lateClone of [true, false]) {
+    const lines = [
+      ...harness,
+      '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+      '50 21:00:00.000410 execve("/usr/bin/sh", ["sh", "-c", "node reexec.js"], ' + ENV_OK + ') = 0',
+      '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>',
+      '60 21:00:00.000430 execve("/usr/local/bin/node", ["node", "reexec.js"], ' + ENV_OK + ') = 0',
+      '50 21:00:00.000440 <... clone resumed>) = 60',
+      preloadOpen(60),
+    ];
+    const reexec = '61 21:00:00.000520 execve("/proc/self/exe", ["x", "-e", "process.env.NPM_TOKEN"], ' + ENV_STRIPPED + ') = 0';
+    if (lateClone) lines.push('60 21:00:00.000500 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>', reexec, '60 21:00:00.000530 <... clone resumed>) = 61');
+    else lines.push('60 21:00:00.000500 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD) = 61', reexec);
+    const ob = mini(lines, { out: hb([40, 60]) });
+    const m = markerOf(ob, 'instrumentation-heartbeat');
+    assert.equal(m.ok, false, `lateClone=${lateClone}`);
+    assert.ok(m.detail.reasons[61], `pid 61 must be checked (lateClone=${lateClone})`);
+  }
+});
+
 test('printenv NAME is an env read of NAME', () => {
   const ob = mini(['40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42', '42 21:00:00.000600 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ' + ENV_OK + ') = 0']);
   const r = ob.observations.find((o) => o.kind === 'env-read');
