@@ -56,6 +56,16 @@ test('C4 rule a: write outside /work, /tmp and HOME, successful or blocked', () 
   assert.equal(decide({ observations: [F.write('/tmpx', 'package'), F.loadOk()] }).verdict, 'do-not-install');
 });
 
+test('C4 regression (adversary pre-candidate note dd05b3cb): paths are normalised before area checks', () => {
+  for (const p of ['/work/../etc/passwd', '/tmp/../etc/x', '/work/./../usr/lib/x', '/home/qp/../../etc/x', 'relative/x', '', 'unresolved:x']) {
+    assert.equal(decide({ observations: [F.write(p, 'package', true), F.loadOk()] }).verdict, 'do-not-install', p);
+  }
+  assert.equal(decide({ observations: [F.write('/work/a/../b', 'package'), F.loadOk()] }).verdict, 'install');
+  assert.equal(decide({ observations: [F.write('/home/qp/x/../y', 'package'), F.loadOk()] }).verdict, 'review');
+  assert.equal(decide({ observations: [F.access('/home/qp/x/../.npmrc'), F.loadOk()] }).verdict, 'do-not-install');
+  assert.equal(decide({ observations: [F.access('/var/run/../run/docker.sock'), F.loadOk()] }).verdict, 'do-not-install');
+});
+
 test('C4 actors: npm and harness never count, unattributed counts', () => {
   assert.equal(decide({ observations: [F.write('/etc/x', 'npm'), F.loadOk()] }).verdict, 'install');
   assert.equal(decide({ observations: [F.write('/etc/x', 'harness'), F.loadOk()] }).verdict, 'install');

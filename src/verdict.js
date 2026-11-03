@@ -10,7 +10,18 @@ const CREDENTIAL_PATHS = ['.npmrc', '.ssh', '.aws', '.docker', '.config/gcloud']
 const KEY_LIKE = /(^|[_-])(API_?KEY|KEY|TOKEN|SECRET|PASS(WORD)?|PASSWD|CREDENTIALS?)([_-]|$)/i;
 const COUNTED_ACTORS = new Set(['package', 'unattributed']);
 
-const under = (p, root) => typeof p === 'string' && (p === root || p.startsWith(`${root}/`));
+// Lexical normalisation (".", "..", "//"). Anything not absolute (relative,
+// empty, "unresolved:...") yields null and is never inside an allowed area.
+function norm(p) {
+  if (typeof p !== 'string' || !p.startsWith('/')) return null;
+  const parts = [];
+  for (const seg of p.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop(); else parts.push(seg);
+  }
+  return `/${parts.join('/')}`;
+}
+const under = (p, root) => { const n = norm(p); return n !== null && (n === root || n.startsWith(`${root}/`)); };
 const counted = (o) => COUNTED_ACTORS.has(o.actor);
 const isNet = (o) => o.kind === 'net-dns' || o.kind === 'net-tcp' || o.kind === 'net-udp' || o.kind === 'net-other' || o.kind === 'net-listen';
 
@@ -26,7 +37,7 @@ const RULES = Object.freeze([
     id: 'b', tier: 'do-not-install',
     text: 'access attempt to docker.sock or a credential path',
     match: (o) => o.kind === 'fs-access' && counted(o)
-      && (DOCKER_SOCKETS.includes(o.path) || CREDENTIAL_PATHS.some((c) => under(o.path, c))),
+      && (DOCKER_SOCKETS.includes(norm(o.path)) || CREDENTIAL_PATHS.some((c) => under(o.path, c))),
   },
   {
     id: 'c1', tier: 'do-not-install',
