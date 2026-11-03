@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-proc-self-exe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture. Never published. Re-executes node through /proc/self/exe with the environment stripped and reads a key-like env var (SF-2).",
+  "main": "index.js",
+  "scripts": { "install": "node reexec.js" },
+  "license": "MIT"
+}

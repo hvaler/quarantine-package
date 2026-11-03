@@ -173,12 +173,25 @@ function analyse(text, opts = {}) {
         }
         break;
       }
+      case 'execveat': {
+        // fexecve / execveat: what runs is identified by an fd, not a checkable path.
+        if (c.ret === 0) {
+          const { argv: av, envp } = execArgs(c.args.replace(/^[^,]*,\s*/, ''));
+          exe.set(p, '(execveat)');
+          argv.set(p, av);
+          events.push({ ...base, type: 'exec', path: '(execveat)', rawPath: c.args.slice(0, 120), argv: av, envp, opaque: true });
+        }
+        break;
+      }
       case 'execve': {
         const { path: rawExe, argv: av, envp } = execArgs(c.args);
         if (c.ret === 0) {
           // DEC-11r3: identify what was executed, not its name. The path is resolved
           // against the cwd and through every symlink created during the task.
-          const resolved = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
+          // /proc/<self|thread-self|pid>/exe is the executing process's current binary.
+          let resolved = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
+          const procExe = resolved && /^\/proc\/(self|thread-self|\d+)\/exe$/.exec(resolved);
+          if (procExe) resolved = procExe[1] === 'self' || procExe[1] === 'thread-self' ? (exe.get(p) || null) : (exe.get(tg(Number(procExe[1]))) || null);
           const path = resolved ? canonical(resolved) : rawExe;
           exe.set(p, path);
           argv.set(p, av);

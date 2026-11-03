@@ -285,8 +285,13 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   for (const x of tr.events) {
     if (x.type !== 'exec') continue;
     const isNode = /^\/usr\/local\/bin\/node$/.test(x.path) || /\/node$/.test(x.path);
-    const pkgWritable = onWritable(x.path) && COUNTED.has(forRules(actorOf(x.pid)));
-    if (isNode || pkgWritable) lastNodeExec.set(x.pid, { ...x, writable: pkgWritable && !isNode });
+    const byPkg = COUNTED.has(forRules(actorOf(x.pid)));
+    // Execs whose real program cannot be identified from the path must also prove
+    // instrumentation (fail closed): the dynamic loader runs whatever its argv names,
+    // execveat runs an fd, and an unresolvable /proc/*/exe is unknown.
+    const opaque = byPkg && (x.opaque || /(^|\/)ld-(linux|musl)[^/]*\.so[^/]*$|\/ld\.so$/.test(String(x.path)) || /^\/proc\//.test(String(x.path)));
+    const pkgWritable = onWritable(x.path) && byPkg;
+    if (isNode || pkgWritable || opaque) lastNodeExec.set(x.pid, { ...x, writable: (pkgWritable || opaque) && !isNode });
   }
   const nodePids = [...lastNodeExec.keys()];
   const reasons = {};
@@ -300,7 +305,7 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
     const roleVar = (x.envp || []).find((v) => typeof v === 'string' && v.startsWith('QP_ROLE='));
     if (roleVar === 'QP_ROLE=npm' && pid !== roles.npmPid) r.push('QP_ROLE=npm on a process that is not the orchestrator\'s npm (env would be unwrapped)');
     if (NPM_CLI_PATHS.includes(x.argv[1]) && pid !== roles.npmPid) r.push('npm CLI started by package code');
-    if (r.length && x.writable) r.unshift(`exec of ${x.path} from a sandbox-writable mount, not shown to be instrumented node`);
+    if (r.length && x.writable) r.unshift(`exec of ${x.path} (sandbox-writable mount, dynamic loader, fd exec or unresolved /proc path), not shown to be instrumented node`);
     if (r.length && x.rawPath && x.rawPath !== x.path) r.push(`executed as ${x.rawPath}`);
     if (r.length) reasons[pid] = r;
   }

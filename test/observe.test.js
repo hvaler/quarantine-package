@@ -292,6 +292,20 @@ test('AF-3: an instrumented node copy on a writable mount passes; system binarie
   assert.equal(markerOf(ob, 'instrumentation-heartbeat').ok, true);
 });
 
+test('self-review: re-exec via /proc/self/exe, the dynamic loader or execveat must be instrumented', () => {
+  const base = ['40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ' + ENV_OK + ') = 0', preloadOpen(40)];
+  const cases = [
+    // a node child re-executes itself through /proc/self/exe with NODE_OPTIONS stripped
+    ['41 21:00:00.000450 execve("/usr/local/bin/node", ["node", "a.js"], ' + ENV_OK + ') = 0', preloadOpen(41), '41 21:00:00.000500 execve("/proc/self/exe", ["x", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
+    ['41 21:00:00.000500 execve("/lib64/ld-linux-x86-64.so.2", ["ld", "/usr/local/bin/node", "-e", "1"], ' + ENV_STRIPPED + ') = 0'],
+    ['41 21:00:00.000500 execveat(3</usr/local/bin/node>, "", ["x", "-e", "1"], ' + ENV_STRIPPED + ', AT_EMPTY_PATH) = 0'],
+  ];
+  for (const lines of cases) {
+    const ob = mini([...base, '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 41', ...lines], { out: hb([40, 41]) });
+    assert.equal(markerOf(ob, 'instrumentation-heartbeat').ok, false, lines[lines.length - 1]);
+  }
+});
+
 test('printenv NAME is an env read of NAME', () => {
   const ob = mini(['40 21:00:00.000500 clone(child_stack=NULL, flags=SIGCHLD) = 42', '42 21:00:00.000600 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ' + ENV_OK + ') = 0']);
   const r = ob.observations.find((o) => o.kind === 'env-read');

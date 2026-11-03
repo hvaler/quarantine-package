@@ -14,3 +14,4 @@ Only directory names inside this folder are accepted.
 | `dep-git` | none; it declares a dependency by git URL | `aborted`, `download-non-registry` (DEC-16, rejected before any fetch), exit 3 |
 | `dep-shrinkwrap` | none; it declares a registry range but ships an npm-shrinkwrap.json pinning it to a non-registry URL | `aborted`, `download-non-registry` (root shrinkwrap rejected before npm runs), exit 3 |
 | `node-symlink` | runs node through a symlink in /tmp with NODE_OPTIONS cleared and reads NPM_TOKEN | never `install`: `review` (i), instrumentation marker fails (DEC-11r3) |
+| `proc-self-exe` | re-executes node through /proc/self/exe with env stripped and reads NPM_TOKEN | never `install`: `review` (i), instrumentation marker fails (SF-2) |

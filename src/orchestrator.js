@@ -27,6 +27,7 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
   'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); an npm started by package code is therefore reported as incomplete instrumentation (review).',
   'Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) is invisible to both the kernel trace and the preload.',
+  'DEC-11r4: a package lifecycle that executes a script directly from /work, /tmp or HOME (e.g. "./install.sh" rather than "sh ./install.sh" or "node x.js") fails the instrumentation marker and gets review (i): the trace cannot tell a script from an ELF binary there (fail closed; narrowed in S2, X8).',
   'Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);

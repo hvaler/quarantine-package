@@ -177,6 +177,7 @@ The nonce is readable by package code in the same process, so QPEV records are f
   - The trace resolves every exec path against the cwd and through every symlink created during the task. So `ln -s /usr/local/bin/node /tmp/qpx; /tmp/qpx` is a node exec, and a hard link from a writable mount to the image's node is impossible (EXDEV).
   - Every node exec, and every exec by package code of any file on `/work`, `/tmp` or `/home/qp`, must show three kinds of instrumentation evidence: the preload flag in the traced envp, a traced open of `/opt/qp/preload.cjs` by that pid, and a heartbeat. Without it, `instrumentation-heartbeat` fails and the result is (i).
   - This covers copies of node and any other binary. Scripts executed directly from those mounts also fail closed, because the trace cannot tell a script from an ELF binary. That is stricter than DEC-11r3 (2).
+  - The same evidence is required for package execs whose real program the path does not show: `/proc/<self|thread-self|pid>/exe` (resolved to that process's current binary, so a node re-exec is a node exec), the dynamic loader (`ld-linux*`, `ld-musl*`, `ld.so`) and `execveat` (traced; identified by fd).
   - `completeness.instrumentation-heartbeat.detail.reasons[<pid>]` names the cause and the path as executed.
 - The load record can be forged by package code that already runs inside the harness. This is listed in `knownLimitations`.
 
@@ -287,6 +288,7 @@ DEC-2r2 covers env and printenv executed by package code:
 | `dep-git` | `qp-fixture-dep-git` | `aborted`, `download-non-registry` at the root stage, exit 3 |
 | `dep-shrinkwrap` | `qp-fixture-dep-shrinkwrap` | `aborted`, `download-non-registry` (root ships npm-shrinkwrap.json), exit 3 |
 | `node-symlink` | `qp-fixture-node-symlink` | `review` (i): uninstrumented node exec through a symlink (DEC-11r3) |
+| `proc-self-exe` | `qp-fixture-proc-self-exe` | `review` (i): uninstrumented node via /proc/self/exe (SF-2) |
 
 ## 8. Host probe (C2, DEC-5r1)
 
