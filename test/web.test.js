@@ -61,6 +61,15 @@ test('S3-SEC a: every package- or model-controlled string in the receipt page is
   assert.equal(/<img|<script>alert/i.test(job), false);
 });
 
+test('Demos: every fixture demo exists in fixtures/ and every registry demo is a valid web spec; no style attribute (CSP)', () => {
+  for (const d of render.DEMOS) {
+    if (d.kind === 'fixture') assert.ok(fs.existsSync(path.join(__dirname, '..', 'fixtures', d.fixture, 'package.json')), d.id);
+    else assert.equal(validateWebSpec(d.spec).ok, true, d.id);
+  }
+  const html = render.homePage({ nonce: 'N' }) + render.jobPage({ nonce: 'N', job: { id: 'x', label: 'y', status: 'z' } }) + render.receiptPage({ nonce: 'N', receipt: {} });
+  assert.equal(/\sstyle=/i.test(html), false);
+});
+
 test('S3-SEC a: progress script sets text only and links only to a checked receipt id', () => {
   assert.equal(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(/.test(render.PROGRESS_JS), false);
   assert.match(render.PROGRESS_JS, /\^\[a-f0-9\]\{10\}\$/);
