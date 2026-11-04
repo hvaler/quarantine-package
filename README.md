@@ -10,6 +10,11 @@ A model on **Vultr Serverless Inference** reads the package first. It predicts w
 main API. The receipt puts that prediction next to what was really observed. The verdict never depends on the
 model: fixed rules compute it from the kernel trace and the sinkhole log.
 
+**Live demo:** https://qp.hugovaler.com (one Vultr VM). Example receipts:
+[express → install](https://qp.hugovaler.com/r/514e574600) ·
+[network demo → review](https://qp.hugovaler.com/r/d5af19b228) ·
+[hostile package → do-not-install](https://qp.hugovaler.com/r/8b42cfb93e).
+
 ## The use case, and how the agent executes real tasks
 
 Supply-chain attacks hide in install scripts and load-time code: they read tokens, write to system paths, and
@@ -89,6 +94,17 @@ The receipt shows:
 `/healthz` keeps answering during the run, and the next analysis runs in a fresh sandbox.
 [`docs/DEMO.md`](docs/DEMO.md) is the step-by-step demo script.
 
+## Tried on real dependencies
+
+Three dependencies of one of the author's own projects (a Fastify and Stellar payments app), run on the live
+deployment on 4 Nov 2026:
+
+| Package | Verdict | What it shows |
+|---|---|---|
+| `fastify@5.12.4` | [`install`](https://qp.hugovaler.com/r/d6fbf70332) in about 9 s | A real server framework passes: no network, no writes outside its folder, model prediction matches. |
+| `esbuild@0.28.2` | [`review`](https://qp.hugovaler.com/r/ab40fb6263) | A package that runs a native binary as a long-lived child trips a completeness check, so it fails closed (L-16). |
+| `@stellar/stellar-sdk@17.0.1` | aborted before running | Its tree is over the 50 MB download limit, so nothing is executed and no verdict is given (L-17). |
+
 ## Setup from a clean clone
 
 **Requirements:**
@@ -167,6 +183,8 @@ Every receipt lists these in `knownLimitations`.
 | L-13 | A native addon (`.node`) loaded by the package can read env variables without leaving a record. Only the "tried to read a key" signal is lost. |
 | L-14 | The web service user is in the `docker` group, which is root-equivalent, so a compromise of the web process would be a host compromise. Mitigations: no admin or Docker route, argv-only calls (never a shell), systemd hardening, and the app bound to 127.0.0.1 behind Caddy. Rootless Docker or a socket proxy is future work. |
 | L-15 | Test-only, not a product limitation. On a Linux host (such as the node 22 deploy VM), the preload's role check (H-1) demotes the test process, so the latch unit tests cannot detect a latch regression (S2j/S2k). Any change to `preload.cjs` or `harness.cjs` needs a unit run on a non-Linux host (the developer's node 24 run) plus the runtime S2 suite. |
+| L-16 | A package whose API keeps a native child process running (for example `esbuild`) can leave a completeness marker missing, which gives `review` for a benign package. Fail closed. |
+| L-17 | Large dependency trees (over 50 MB unpacked or 300 packages, for example `@stellar/stellar-sdk`) are aborted at download with no verdict. The limits fit a 4 GB VM and are configurable. |
 | H-1 | **Done.** The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
