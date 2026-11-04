@@ -541,7 +541,7 @@ test('L-7 race: worker-thread spawn while the main thread flips cwd (adv-thread-
   assert.ok(paths.some((p) => p === 'unresolved:cron.d/adv-race' || p === '/etc/cron.d/adv-race'), `fails closed: ${paths}`);
 });
 
-test('L-7 race: a sibling chdir that completed before the clone entry is inherited normally (no false race)', () => {
+test('Dispatch 3 (L-8b): a sibling-thread chdir completed before the fork still makes the child cwd unresolved (structural, fail closed)', () => {
   const lines = [
     '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
     '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
@@ -551,7 +551,8 @@ test('L-7 race: a sibling chdir that completed before the clone entry is inherit
     '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3',
   ];
   const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
-  assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+  assert.equal(paths.includes('/work/node_modules/pkg/build/out.txt'), false, `${paths}`);
+  assert.ok(paths.includes('unresolved:build/out.txt'), `${paths}`);
 });
 
 const raceBase = [
@@ -599,4 +600,87 @@ test('L-7 unknown outcome: a chdir that clearly failed (-1 ENOENT) is not a race
     '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3'];
   const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
   assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+});
+
+// ---- Dispatch 3: structural rule (independent of strace print order)
+const d3 = (order) => {
+  // node 50 (main) and worker 52; main chdirs to /etc, the worker spawns 60, which
+  // writes relative cron.d/x. `order` puts the main thread's chdir before, during
+  // or after the clone in print order; the result must not change.
+  const head = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "race.js"], 0x0) = 0',
+    '50 21:00:00.000411 chdir("/work") = 0',
+  ];
+  const thread = '50 21:00:00.000414 clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x1, parent_tid=0x1, exit_signal=0, stack=0x1, stack_size=0x1, tls=0x1}, 88) = 52';
+  const chdir = '50 21:00:00.000600 chdir("/etc") = 0';
+  const fork = '52 21:00:00.000620 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD) = 60';
+  const write = '60 21:00:00.000700 openat(AT_FDCWD, "cron.d/x", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)';
+  if (order === 'before') return [...head, thread, chdir, fork, write];
+  if (order === 'after') return [...head, thread, fork, write, chdir];
+  if (order === 'thread-late') return [...head, chdir, fork, write, thread]; // thread creation printed last
+  return [...head, thread, '52 21:00:00.000620 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>', chdir, '52 21:00:00.000640 <... clone resumed>) = 60', write];
+};
+
+test('Dispatch 3: a worker-thread fork in a group whose other thread ever chdirs gives an unresolved cwd in every print order', () => {
+  for (const order of ['before', 'during', 'after', 'thread-late']) {
+    const ob = mini(d3(order));
+    const paths = ob.observations.map((o) => o.path).filter(Boolean);
+    assert.equal(paths.some((p) => p.startsWith('/work/')), false, `${order}: ${paths}`);
+    assert.ok(paths.includes('unresolved:cron.d/x'), `${order}: ${paths}`);
+    assert.ok(ob.observations.some((o) => o.kind === 'fs-write' && o.path === 'unresolved:cron.d/x'), `${order}: write is (a)-relevant`);
+  }
+});
+
+test('Dispatch 3: the forking thread own chdir is inherited normally', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
+    '50 21:00:00.000412 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 51',
+    '50 21:00:00.000414 chdir("/work/node_modules/pkg") = 0',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '50 21:00:00.000430 chdir("/work") = 0',
+    '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+});
+
+test('Dispatch 3: a single-threaded chdir is inherited normally', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/bin/sh", ["sh", "-c", "cd build && node gen.js"], 0x0) = 0',
+    '50 21:00:00.000414 chdir("/work/node_modules/pkg/build") = 0',
+    '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD) = 60',
+    '60 21:00:00.000500 openat(AT_FDCWD, "out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+});
+
+test('Dispatch 3: a failed sibling chdir (-1) does not trigger the rule', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
+    '50 21:00:00.000411 chdir("/work/node_modules/pkg") = 0',
+    '50 21:00:00.000412 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 51',
+    '51 21:00:00.000418 chdir("/nope") = -1 ENOENT (No such file or directory)',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+});
+
+test('Dispatch 3: a non-thread CLONE_FS child shares cwd with its parent: both unresolved after the share', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/work/node_modules/pkg/bin", ["bin"], 0x0) = 0',
+    '50 21:00:00.000411 chdir("/work") = 0',
+    '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_FS|SIGCHLD) = 60',
+    '60 21:00:00.000430 chdir("/etc") = 0',
+    '50 21:00:00.000500 openat(AT_FDCWD, "cron.d/x", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/cron.d/x'), false, `${paths}`);
 });

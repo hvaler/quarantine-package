@@ -169,6 +169,33 @@ function analyse(text, opts = {}) {
   // the child's cwd.
   // Counted unless it clearly failed: "= ?" (killed mid-call) or never resumed may have applied.
   const cwdChanges = calls.filter((x) => (x.name === 'chdir' || x.name === 'fchdir') && x.ret !== -1 && !(typeof x.ret === 'number' && x.ret < 0));
+  // Dispatch 3 structural rule (AF-8 / L-7): independent of print order. Thread
+  // membership comes from every CLONE_THREAD clone in the whole trace; a child
+  // forked by a thread group in which any thread OTHER than the forking one ever
+  // ran chdir/fchdir (before or after the fork, outcome unknown included) gets an
+  // unresolved cwd. The forking thread's own chdir is inherited normally.
+  const threadParent = new Map(); // tid -> tid that created it with CLONE_THREAD
+  for (const x of calls) {
+    if ((x.name === 'clone' || x.name === 'clone3') && x.ret > 0 && /CLONE_THREAD/.test(x.args)) threadParent.set(x.ret, x.pid);
+  }
+  const leader = (t) => {
+    const hops = new Set();
+    while (threadParent.has(t) && !hops.has(t)) { hops.add(t); t = threadParent.get(t); }
+    return t;
+  };
+  const groupChdirTids = new Map(); // group leader -> tids that ran chdir/fchdir
+  for (const d of cwdChanges) {
+    const g = leader(d.pid);
+    if (!groupChdirTids.has(g)) groupChdirTids.set(g, new Set());
+    groupChdirTids.get(g).add(d.pid);
+  }
+  const otherThreadChdir = (forker) => {
+    const tids = groupChdirTids.get(leader(forker));
+    return !!tids && [...tids].some((t) => t !== forker);
+  };
+  // A non-thread clone with CLONE_FS shares cwd with its parent: a chdir by either
+  // changes both, which the per-group model cannot follow. Both stay unresolved.
+  const fsShared = new Set();
   for (let ci = 0; ci < calls.length; ci++) {
     const c = calls[ci];
     const p = tg(c.pid);
@@ -195,8 +222,9 @@ function analyse(text, opts = {}) {
             // not known here: unresolved (fail closed), never the later one.
             // Another thread of this group (or a thread not yet attributed) changing
             // cwd during the clone: the child's cwd is unknown (fail closed).
-            const raced = cwdChanges.some((d) => d.pid !== c.pid && d.pid !== child && (!tgid.has(d.pid) || tg(d.pid) === p) && d.entry <= c.exit && d.exit >= c.entry);
+            const raced = otherThreadChdir(c.pid) || cwdChanges.some((d) => d.pid !== c.pid && d.pid !== child && (!tgid.has(d.pid) || tg(d.pid) === p) && d.entry <= c.exit && d.exit >= c.entry);
             if (!ownCwd.has(child)) cwd.set(child, raced ? null : cwd.get(p));
+            if (/CLONE_FS/.test(c.args)) { fsShared.add(p); fsShared.add(child); cwd.set(p, null); cwd.set(child, null); }
             if (!seen.has(child)) {
               if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
               if (argv.has(p)) argv.set(child, argv.get(p));
@@ -243,14 +271,14 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'chdir': {
-        if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
+        if (c.ret === 0) { cwd.set(p, fsShared.has(p) ? null : resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
       }
       case 'fchdir': {
         // strace -y prints the directory behind the fd: fchdir(3</work/x>)
         const d = /^\d+<([^>]*)>/.exec(c.args);
-        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); }
+        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') && !fsShared.has(p) ? normalize(d[1]) : null); ownCwd.add(p); }
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
       }
