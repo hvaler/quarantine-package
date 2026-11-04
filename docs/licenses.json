@@ -1,0 +1,701 @@
+{
+  "schema": "qp-licenses/1",
+  "image": "qp-sandbox:s1-80b7ad33",
+  "repo": {
+    "license": "MIT",
+    "licenseFileIsMit": true,
+    "dependencies": [],
+    "devDependencies": []
+  },
+  "imageRuntimeModules": [
+    {
+      "name": "npm-package-arg",
+      "version": "12.0.2",
+      "license": "ISC"
+    },
+    {
+      "name": "pacote",
+      "version": "19.0.2",
+      "license": "ISC"
+    },
+    {
+      "name": "hosted-git-info",
+      "version": "8.1.0",
+      "license": "ISC"
+    },
+    {
+      "name": "proc-log",
+      "version": "5.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "semver",
+      "version": "7.7.4",
+      "license": "ISC"
+    },
+    {
+      "name": "validate-npm-package-name",
+      "version": "6.0.2",
+      "license": "ISC"
+    },
+    {
+      "name": "@npmcli/git",
+      "version": "6.0.3",
+      "license": "ISC"
+    },
+    {
+      "name": "@npmcli/installed-package-contents",
+      "version": "3.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "@npmcli/package-json",
+      "version": "6.2.0",
+      "license": "ISC"
+    },
+    {
+      "name": "@npmcli/promise-spawn",
+      "version": "8.0.3",
+      "license": "ISC"
+    },
+    {
+      "name": "@npmcli/run-script",
+      "version": "9.1.0",
+      "license": "ISC"
+    },
+    {
+      "name": "cacache",
+      "version": "19.0.1",
+      "license": "ISC"
+    },
+    {
+      "name": "fs-minipass",
+      "version": "3.0.3",
+      "license": "ISC"
+    },
+    {
+      "name": "minipass",
+      "version": "7.1.3",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "npm-packlist",
+      "version": "9.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "npm-pick-manifest",
+      "version": "10.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "npm-registry-fetch",
+      "version": "18.0.2",
+      "license": "ISC"
+    },
+    {
+      "name": "promise-retry",
+      "version": "2.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "sigstore",
+      "version": "3.1.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "ssri",
+      "version": "12.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "tar",
+      "version": "7.5.22",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "lru-cache",
+      "version": "10.4.3",
+      "license": "ISC"
+    },
+    {
+      "name": "ini",
+      "version": "5.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "which",
+      "version": "5.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "npm-bundled",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "npm-normalize-package-bin",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "glob",
+      "version": "10.5.0",
+      "license": "ISC"
+    },
+    {
+      "name": "json-parse-even-better-errors",
+      "version": "4.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "validate-npm-package-license",
+      "version": "3.0.4",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@npmcli/node-gyp",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "node-gyp",
+      "version": "11.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@npmcli/fs",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "minipass-collect",
+      "version": "2.0.1",
+      "license": "ISC"
+    },
+    {
+      "name": "minipass-flush",
+      "version": "1.0.5",
+      "license": "ISC"
+    },
+    {
+      "name": "minipass-pipeline",
+      "version": "1.2.4",
+      "license": "ISC"
+    },
+    {
+      "name": "p-map",
+      "version": "7.0.4",
+      "license": "MIT"
+    },
+    {
+      "name": "unique-filename",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "ignore-walk",
+      "version": "7.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "npm-install-checks",
+      "version": "7.1.2",
+      "license": "BSD-2-Clause"
+    },
+    {
+      "name": "@npmcli/redact",
+      "version": "3.2.2",
+      "license": "ISC"
+    },
+    {
+      "name": "jsonparse",
+      "version": "1.3.1",
+      "license": "MIT"
+    },
+    {
+      "name": "make-fetch-happen",
+      "version": "14.0.3",
+      "license": "ISC"
+    },
+    {
+      "name": "minipass-fetch",
+      "version": "4.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "minizlib",
+      "version": "3.1.0",
+      "license": "MIT"
+    },
+    {
+      "name": "err-code",
+      "version": "2.0.3",
+      "license": "MIT"
+    },
+    {
+      "name": "retry",
+      "version": "0.12.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@sigstore/bundle",
+      "version": "3.1.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@sigstore/core",
+      "version": "2.0.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@sigstore/protobuf-specs",
+      "version": "0.4.3",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@sigstore/sign",
+      "version": "3.1.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@sigstore/tuf",
+      "version": "3.1.1",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@sigstore/verify",
+      "version": "2.1.1",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "@isaacs/fs-minipass",
+      "version": "4.0.1",
+      "license": "ISC"
+    },
+    {
+      "name": "chownr",
+      "version": "3.0.0",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "yallist",
+      "version": "5.0.0",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "isexe",
+      "version": "3.1.5",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "foreground-child",
+      "version": "3.3.1",
+      "license": "ISC"
+    },
+    {
+      "name": "jackspeak",
+      "version": "3.4.3",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "minimatch",
+      "version": "9.0.9",
+      "license": "ISC"
+    },
+    {
+      "name": "package-json-from-dist",
+      "version": "1.0.1",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "path-scurry",
+      "version": "1.11.1",
+      "license": "BlueOak-1.0.0"
+    },
+    {
+      "name": "spdx-correct",
+      "version": "3.2.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "spdx-expression-parse",
+      "version": "3.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "env-paths",
+      "version": "2.2.1",
+      "license": "MIT"
+    },
+    {
+      "name": "exponential-backoff",
+      "version": "3.1.3",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "graceful-fs",
+      "version": "4.2.11",
+      "license": "ISC"
+    },
+    {
+      "name": "nopt",
+      "version": "8.1.0",
+      "license": "ISC"
+    },
+    {
+      "name": "tinyglobby",
+      "version": "0.2.15",
+      "license": "MIT"
+    },
+    {
+      "name": "minipass",
+      "version": "3.3.6",
+      "license": "ISC"
+    },
+    {
+      "name": "minipass",
+      "version": "3.3.6",
+      "license": "ISC"
+    },
+    {
+      "name": "unique-slug",
+      "version": "5.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "@npmcli/agent",
+      "version": "3.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "http-cache-semantics",
+      "version": "4.2.0",
+      "license": "BSD-2-Clause"
+    },
+    {
+      "name": "negotiator",
+      "version": "1.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "minipass-sized",
+      "version": "1.0.3",
+      "license": "ISC"
+    },
+    {
+      "name": "tuf-js",
+      "version": "3.1.0",
+      "license": "MIT"
+    },
+    {
+      "name": "cross-spawn",
+      "version": "7.0.6",
+      "license": "MIT"
+    },
+    {
+      "name": "signal-exit",
+      "version": "4.1.0",
+      "license": "ISC"
+    },
+    {
+      "name": "@isaacs/cliui",
+      "version": "8.0.2",
+      "license": "ISC"
+    },
+    {
+      "name": "brace-expansion",
+      "version": "2.0.2",
+      "license": "MIT"
+    },
+    {
+      "name": "spdx-expression-parse",
+      "version": "3.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "spdx-license-ids",
+      "version": "3.0.23",
+      "license": "CC0-1.0"
+    },
+    {
+      "name": "spdx-exceptions",
+      "version": "2.5.0",
+      "license": "CC-BY-3.0"
+    },
+    {
+      "name": "abbrev",
+      "version": "3.0.1",
+      "license": "ISC"
+    },
+    {
+      "name": "fdir",
+      "version": "6.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "picomatch",
+      "version": "4.0.3",
+      "license": "MIT"
+    },
+    {
+      "name": "yallist",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "yallist",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "imurmurhash",
+      "version": "0.1.4",
+      "license": "MIT"
+    },
+    {
+      "name": "agent-base",
+      "version": "7.1.4",
+      "license": "MIT"
+    },
+    {
+      "name": "http-proxy-agent",
+      "version": "7.0.2",
+      "license": "MIT"
+    },
+    {
+      "name": "https-proxy-agent",
+      "version": "7.0.6",
+      "license": "MIT"
+    },
+    {
+      "name": "socks-proxy-agent",
+      "version": "8.0.5",
+      "license": "MIT"
+    },
+    {
+      "name": "minipass",
+      "version": "3.3.6",
+      "license": "ISC"
+    },
+    {
+      "name": "@tufjs/models",
+      "version": "3.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "debug",
+      "version": "4.4.3",
+      "license": "MIT"
+    },
+    {
+      "name": "path-key",
+      "version": "3.1.1",
+      "license": "MIT"
+    },
+    {
+      "name": "shebang-command",
+      "version": "2.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "which",
+      "version": "2.0.2",
+      "license": "ISC"
+    },
+    {
+      "name": "string-width",
+      "version": "5.1.2",
+      "license": "MIT"
+    },
+    {
+      "name": "string-width-cjs",
+      "version": "4.2.3",
+      "license": "MIT"
+    },
+    {
+      "name": "strip-ansi",
+      "version": "7.2.0",
+      "license": "MIT"
+    },
+    {
+      "name": "strip-ansi-cjs",
+      "version": "6.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "wrap-ansi",
+      "version": "8.1.0",
+      "license": "MIT"
+    },
+    {
+      "name": "wrap-ansi-cjs",
+      "version": "7.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "balanced-match",
+      "version": "1.0.2",
+      "license": "MIT"
+    },
+    {
+      "name": "socks",
+      "version": "2.8.7",
+      "license": "MIT"
+    },
+    {
+      "name": "yallist",
+      "version": "4.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "@tufjs/canonical-json",
+      "version": "2.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "ms",
+      "version": "2.1.3",
+      "license": "MIT"
+    },
+    {
+      "name": "shebang-regex",
+      "version": "3.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "isexe",
+      "version": "2.0.0",
+      "license": "ISC"
+    },
+    {
+      "name": "eastasianwidth",
+      "version": "0.2.0",
+      "license": "MIT"
+    },
+    {
+      "name": "emoji-regex",
+      "version": "9.2.2",
+      "license": "MIT"
+    },
+    {
+      "name": "emoji-regex",
+      "version": "8.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "is-fullwidth-code-point",
+      "version": "3.0.0",
+      "license": "MIT"
+    },
+    {
+      "name": "strip-ansi",
+      "version": "6.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "ansi-regex",
+      "version": "6.2.2",
+      "license": "MIT"
+    },
+    {
+      "name": "ansi-regex",
+      "version": "5.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "ansi-styles",
+      "version": "6.2.3",
+      "license": "MIT"
+    },
+    {
+      "name": "string-width",
+      "version": "5.1.2",
+      "license": "MIT"
+    },
+    {
+      "name": "strip-ansi",
+      "version": "7.2.0",
+      "license": "MIT"
+    },
+    {
+      "name": "ansi-styles",
+      "version": "4.3.0",
+      "license": "MIT"
+    },
+    {
+      "name": "string-width",
+      "version": "4.2.3",
+      "license": "MIT"
+    },
+    {
+      "name": "ip-address",
+      "version": "10.1.0",
+      "license": "MIT"
+    },
+    {
+      "name": "smart-buffer",
+      "version": "4.2.0",
+      "license": "MIT"
+    },
+    {
+      "name": "emoji-regex",
+      "version": "9.2.2",
+      "license": "MIT"
+    },
+    {
+      "name": "ansi-regex",
+      "version": "6.2.2",
+      "license": "MIT"
+    },
+    {
+      "name": "color-convert",
+      "version": "2.0.1",
+      "license": "MIT"
+    },
+    {
+      "name": "color-name",
+      "version": "1.1.4",
+      "license": "MIT"
+    }
+  ],
+  "imageError": null,
+  "systemTools": [
+    {
+      "name": "node (official image)",
+      "license": "MIT",
+      "note": "runtime"
+    },
+    {
+      "name": "npm (bundled in the node image)",
+      "license": "Artistic-2.0",
+      "note": "run as a separate program (npm rebuild / npm ci); not linked into or distributed with this repo"
+    },
+    {
+      "name": "python (official image, sinkhole)",
+      "license": "Python-2.0",
+      "note": "interpreter for the sinkhole script"
+    },
+    {
+      "name": "strace, iptables, tcpdump (Debian/Alpine packages)",
+      "license": "LGPL/GPL",
+      "note": "separate programs invoked in containers; not linked or redistributed by this repo"
+    }
+  ],
+  "allowed": [
+    "MIT",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "0BSD",
+    "BlueOak-1.0.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Python-2.0",
+    "CC-BY-4.0",
+    "CC-BY-3.0"
+  ],
+  "pass": true,
+  "problems": []
+}

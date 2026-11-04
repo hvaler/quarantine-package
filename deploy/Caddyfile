@@ -1,0 +1,10 @@
+# Replace qp.example.com with the VM's DNS name (an A record pointing at the VM).
+# Caddy obtains and renews the TLS certificate automatically.
+qp.example.com {
+	encode gzip
+	# Caddy sets X-Forwarded-For to the real client; the app trusts it only from 127.0.0.1.
+	reverse_proxy 127.0.0.1:8080
+	log {
+		output file /var/log/caddy/qp-access.log
+	}
+}
