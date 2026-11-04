@@ -4,8 +4,9 @@
 // `classify(name, spec)` returns 'registry' or the offending spec type.
 //
 // (a) dependencies, devDependencies, optionalDependencies, peerDependencies are
-//     classified. devDependencies are classified even though a dependency's
-//     devDependencies are not installed: fail closed rather than prove --omit=dev.
+//     classified. X9 (S2): a REGISTRY root's devDependencies are skipped, because
+//     npm never installs the devDependencies of an installed package; a local
+//     (fixture) root still classifies them.
 // (b) overrides (npm) and resolutions (yarn) are walked recursively; every
 //     string value is classified ("$name" references and "." keys are skipped).
 // (c) a non-empty bundleDependencies / bundledDependencies is rejected: bundled
@@ -23,12 +24,13 @@ const RESOLUTION_LIKE = /dependenc|resolution|override|workspace|shrinkwrap|bund
 
 const redact = (s) => String(s).replace(/^(file:|git\+|git:|https?:\/\/|github:|link:|workspace:)[^\s]*/, '$1…');
 
-function checkRoot(manifest, classify) {
+function checkRoot(manifest, classify, { registryRoot = false } = {}) {
   const out = [];
   const m = manifest && typeof manifest === 'object' ? manifest : {};
   const push = (dependency, field, specType, spec) => out.push({ dependency, field, specType, spec: redact(spec) });
 
   for (const field of SPEC_FIELDS) {
+    if (registryRoot && field === 'devDependencies') continue;
     const v = m[field];
     if (v === undefined) continue;
     if (!v || typeof v !== 'object' || Array.isArray(v)) { push('(field)', field, 'invalid:not-an-object', JSON.stringify(v).slice(0, 60)); continue; }

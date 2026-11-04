@@ -56,3 +56,10 @@ test('rootcheck: malformed spec fields fail closed', () => {
   assert.deepEqual(fields(checkRoot({ dependencies: ['a'] }, classify)), ['dependencies:invalid:not-an-object']);
   assert.deepEqual(fields(checkRoot({ dependencies: { a: 1 } }, classify)), ['dependencies:invalid:not-a-string']);
 });
+
+test('X9: a registry root skips devDependencies; a fixture root still classifies them', () => {
+  const m = { dependencies: { a: '^1.0.0' }, devDependencies: { tool: 'git+https://x/y.git' } };
+  assert.deepEqual(checkRoot(m, classify, { registryRoot: true }), []);
+  assert.deepEqual(fields(checkRoot(m, classify)), ['devDependencies:git']);
+  assert.deepEqual(fields(checkRoot({ ...m, dependencies: { evil: 'git+https://x/z.git' } }, classify, { registryRoot: true })), ['dependencies:git']);
+});

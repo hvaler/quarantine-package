@@ -47,7 +47,7 @@ async function main() {
   // classified first; if any is not a registry spec we stop here, before a
   // single network request (for a fixture root nothing has been fetched at all).
   const rootFrom = root.name || '(root)';
-  for (const r of checkRoot(root, classify)) nonRegistry.push({ from: rootFrom, ...r });
+  for (const r of checkRoot(root, classify, { registryRoot: !rootArg.startsWith('/') })) nonRegistry.push({ from: rootFrom, ...r });
   // A shrinkwrap can pin dependencies to any source regardless of the declared
   // specs. A local root that ships one is rejected outright (fail closed); for
   // registry packages, the verified lock after --package-lock-only is the gate.
