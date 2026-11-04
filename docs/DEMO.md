@@ -39,7 +39,7 @@ while true; do curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" https://<
 - **Verdict: do-not-install** (red), with rules `a` (write to `/etc`), `b` (looks for `docker.sock`) and `d`
   (network attempt carrying a payload).
 - The *Observations* table lists:
-  - the blocked write to `/etc/marker`;
+  - the blocked write to `/etc/qp-fixture-marker`;
   - the home-directory write;
   - the `docker.sock` probe;
   - the key-like env count;
