@@ -108,6 +108,10 @@ node src/cli.js scan-secrets                  # pattern scan of the repo and rec
 npm run web                                   # web app on http://127.0.0.1:8080
 ```
 
+On a Linux host, the preload's role check (H-1) demotes any test process that claims the harness role. So the
+package-phase (latch) unit tests catch a latch regression only on a non-Linux host. When you change
+`preload.cjs` or `harness.cjs`, also run `npm test` on a non-Linux host, or the runtime S2 suite.
+
 To use the model, set `VULTR_INFERENCE_KEY` in the environment of the process that runs the CLI or the web
 app. Without it, every analysis still runs and gets its verdict; the receipt says the model was not available.
 `node src/cli.js smoke-model --out evidence/c11-smoke.json` is the one command that calls the real endpoint
