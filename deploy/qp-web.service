@@ -27,21 +27,21 @@ KillSignal=SIGTERM
 TimeoutStopSec=20
 # The docker group is root-equivalent (README L-14); the rest is defence in depth.
 NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/quarantine-package /opt/quarantine-package/state /opt/quarantine-package/evidence
+ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+ReadWritePaths=/var/lib/quarantine-package /opt/quarantine-package/state
 CapabilityBoundingSet=
 AmbientCapabilities=
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 LockPersonality=yes
 RestrictSUIDSGID=yes
-SystemCallArchitectures=native
 UMask=0077
+# Future hardening (not enabled: each could break the docker CLI and needs a test VM):
+# ProtectSystem=strict, PrivateDevices=yes, RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6,
+# SystemCallArchitectures=native.
 
 [Install]
 WantedBy=multi-user.target

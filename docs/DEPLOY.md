@@ -52,6 +52,8 @@ node --version
 ```
 **Check:** `v22.12` or later.
 
+This is NodeSource's standard setup path. It runs their setup script as root; pinning the `nodejs` package version is an option.
+
 ## 4. Service user and the code at a pinned commit
 
 ```sh
@@ -146,3 +148,5 @@ sudo -u qp sh deploy/c16-checks.sh https://<your-dns-name>
 | Stop | `systemctl stop qp-web`. Running tasks are interrupted and torn down within 10 s. |
 | Leftover check / cleanup | `sudo -u qp node src/cli.js leftovers`. `cleanup` removes **every** object of the prefix, so run it only with the service stopped: `systemctl stop qp-web && sudo -u qp node src/cli.js cleanup` |
 | Update | `git fetch && git checkout <NEW_SHA> && sudo -u qp npm run build:images && systemctl restart qp-web` |
+
+**Future hardening (not enabled now).** The unit has `NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, an empty capability set, `ProtectKernel*`, `ProtectControlGroups`, `LockPersonality`, `RestrictSUIDSGID` and `UMask=0077`. Each of the following still needs a test VM, because it could break the docker CLI: `ProtectSystem=strict`, `PrivateDevices`, `RestrictAddressFamilies` and `SystemCallArchitectures=native`. The `docker` group stays root-equivalent (README L-14).
