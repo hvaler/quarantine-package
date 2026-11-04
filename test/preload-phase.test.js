@@ -135,3 +135,23 @@ test('F-S2-2: a package child that sets QP_ROLE=qp-scan or harness itself is sti
     assert.equal(v.verdict, 'do-not-install');
   }
 });
+
+test('F-S2-2: the genuine qp-scan (stage child running /opt/qp/scan.cjs) stays excluded; a spoofed npm on a package child fails instrumentation (never install)', () => {
+  const ENV = (r) => `["PATH=/usr/bin", "NODE_OPTIONS=--require=/opt/qp/preload.cjs", "QP_TASK_NONCE=x", "QP_ROLE=${r}"]`;
+  const scanObs = obsWith([{ type: 'hb', pid: 30 }, { type: 'env-read', pid: 30, name: 'NPM_TOKEN', actor: 'qp-scan', role: 'qp-scan' }], [
+    '10 21:00:00.000150 clone(child_stack=NULL, flags=SIGCHLD) = 30',
+    `30 21:00:00.000160 execve("/usr/local/bin/node", ["node", "/opt/qp/scan.cjs"], ${ENV('qp-scan')}) = 0`,
+  ]);
+  assert.equal(scanObs.find((o) => o.kind === 'env-read').actor, 'harness', 'genuine scan: trace role');
+  assert.equal(decide({ observations: scanObs }).rules.some((r) => r.id === 'c1'), false);
+
+  const npmObs = obsWith([{ type: 'hb', pid: 60 }], [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    `60 21:00:00.000500 execve("/usr/local/bin/node", ["node", "a.js"], ${ENV('npm')}) = 0`,
+  ]);
+  const marker = npmObs.find((o) => o.kind === 'completeness' && o.marker === 'instrumentation-heartbeat');
+  assert.equal(marker.ok, false);
+  assert.match(JSON.stringify(marker), /QP_ROLE=npm on a process that is not/);
+  assert.notEqual(decide({ observations: npmObs }).verdict, 'install');
+  assert.ok(npmObs.some((o) => o.kind === 'spawn' && o.pid === 60 && o.actor === 'package'));
+});
