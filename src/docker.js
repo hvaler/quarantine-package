@@ -30,7 +30,7 @@ function refused(args) {
   return e;
 }
 
-function docker(args, { timeoutMs = 120000, allowFail = true } = {}) {
+function docker(args, { timeoutMs = 120000, allowFail = true, input = null } = {}) {
   if (gate.closed && createsObjects(args)) return Promise.reject(refused(args));
   return new Promise((resolve, reject) => {
     const child = spawn('docker', args, { windowsHide: true });
@@ -38,6 +38,7 @@ function docker(args, { timeoutMs = 120000, allowFail = true } = {}) {
     let out = '';
     let err = '';
     const timer = setTimeout(() => { child.kill(); }, timeoutMs);
+    if (input !== null) { child.stdin.on('error', () => {}); child.stdin.end(input); }
     child.stdout.on('data', (d) => { if (out.length < MAX_CAPTURE) out += d; });
     child.stderr.on('data', (d) => { if (err.length < MAX_CAPTURE) err += d; });
     child.on('error', (e) => { clearTimeout(timer); reject(e); });

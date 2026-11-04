@@ -1,8 +1,11 @@
 'use strict';
-// S1 harness: plain require() of the package (DEC-8: no model in S1).
-// Falls back to dynamic import() for ESM that require() cannot load.
-// Writes one QPEV "load" record, then gives pending async work of the
-// package a short grace period so its attempts are observed, and exits.
+// Harness: plain require() of the package, ALWAYS first (falls back to dynamic
+// import() for ESM). Then, when the orchestrator staged one, the model-written
+// harness runs in this same process (S2, C8). The model harness is untrusted
+// code: it can only add exercise of the package, never skip the plain load, and
+// everything it does is observed as package activity (S2-SEC b, c).
+// Writes QPEV "load" / "model-harness" records, then gives pending async work a
+// short grace period so its attempts are observed, and exits.
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -50,6 +53,39 @@ async function main() {
   }
 }
 
-main().finally(() => {
+const MODEL_HARNESS = '/in/.qp/model-harness.cjs';
+const MODEL_HARNESS_MS = Number(process.env.QP_MODEL_HARNESS_MS || 10000);
+
+function reportModel(rec) {
+  try {
+    writeSync(1, `QPEV ${nonce} ${JSON.stringify({ type: 'model-harness', pid: process.pid, ...rec })}
+`);
+  } catch (_) { /* stdout closed */ }
+}
+
+async function runModelHarness() {
+  let src;
+  try { src = fs.readFileSync(MODEL_HARNESS, 'utf8'); } catch (_) { return; } // none staged
+  const Module = require('node:module');
+  const m = new Module('/work/.qp-model-harness.cjs', null);
+  m.filename = '/work/.qp-model-harness.cjs';
+  m.paths = Module._nodeModulePaths('/work');
+  try {
+    m._compile(src, m.filename);
+    if (typeof m.exports === 'function') {
+      let timer;
+      await Promise.race([
+        Promise.resolve().then(() => m.exports()),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`model harness did not finish within ${MODEL_HARNESS_MS} ms`)), MODEL_HARNESS_MS); }),
+      ]).finally(() => clearTimeout(timer));
+    }
+    reportModel({ ok: true });
+  } catch (err) {
+    // The plain require() above already ran: that is the fallback the receipt reports.
+    reportModel({ ok: false, error: String(err && (err.code || err.message) || err).slice(0, 300) });
+  }
+}
+
+main().then(runModelHarness).finally(() => {
   setTimeout(() => process.exit(0), GRACE_MS);
 });

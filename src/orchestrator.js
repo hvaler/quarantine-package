@@ -15,6 +15,7 @@ const lifecycle = require('./lifecycle');
 const probe = require('./probe');
 const { redact, scanText } = require('./secrets');
 const { createInterrupt } = require('./interrupt');
+const model = require('./model');
 
 const KNOWN_LIMITATIONS = Object.freeze([
   'L-4: ICMP is out of scope: the sandbox has no capability to open raw sockets, and unprivileged ICMP is not logged.',
@@ -42,7 +43,7 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);
 
-const HARNESS_MODE = 'fallback-require (no model in S1)';
+const HARNESS_MODE = 'require, then the model harness when one is staged (S2)';
 
 function hardeningSnapshot(info) {
   if (!info) return null;
@@ -121,7 +122,9 @@ async function analyse(cfg, target, opts = {}) {
     download: null,
     sandbox: null,
     harness: { mode: HARNESS_MODE, loaded: null },
-    explanation: { source: 'none (no model in S1)', text: null, note: 'The verdict is computed by deterministic rules; an explanation never changes it.' },
+    explanation: { label: 'explanation', source: null, text: null, note: 'The verdict is computed by deterministic rules from the observations; this explanation never changes it.' },
+    model: null,
+    predictionVsObserved: null,
     completeness: null,
     observations: [],
     network: { sinkholeLog: [] },
@@ -216,6 +219,17 @@ async function analyse(cfg, target, opts = {}) {
     if (inventory.nonRegistry.length) return await finish(abort(receipt, 'download-non-registry', 'resolved tree contains non-registry dependencies (git, tarball URL, file or link)', 3));
     if (inventory.packageCount > cfg.limits.downloadMaxPackages) return await finish(abort(receipt, 'download-deps', `${inventory.packageCount} packages exceeds ${cfg.limits.downloadMaxPackages}`, 3));
     if (inventory.unpackedBytes > cfg.limits.downloadMaxBytes) return await finish(abort(receipt, 'download-size', `${inventory.unpackedBytes} bytes exceeds ${cfg.limits.downloadMaxBytes}`, 3));
+
+    // ---- S2 model loop (C8): metadata out of the volume (no network, read-only), then the model.
+    const meta = await extractMeta(cfg, vol, N('meta'), L, src.name);
+    const consulted = await model.consult({
+      meta, send: opts.modelSend || model.vultrTransport(), cfg: opts.modelCfg || model.modelConfig(),
+      checkHarness: (code) => checkHarness(cfg, vol, N('hcheck'), L, code),
+    });
+    receipt.model = consulted.section;
+    receipt.explanation.source = consulted.section.explanation ? `model ${consulted.section.model}` : null;
+    receipt.explanation.text = consulted.section.explanation;
+    if (consulted.harness) await stageHarness(cfg, vol, N('stage'), L, consulted.harness);
 
     // ---- internal network + sinkhole
     const net = N('net');
@@ -358,9 +372,15 @@ async function analyse(cfg, target, opts = {}) {
     receipt.observations = ob.observations;
     receipt.network.sinkholeLog = ob.sinkholeLog;
     receipt.completeness = ob.markers;
+    receipt.predictionVsObserved = model.compare(receipt.model && receipt.model.prediction, ob.observations, { packageName: src.name });
     const load = ob.observations.find((o) => o.kind === 'load');
     receipt.harness.loaded = !!(load && load.ok);
     receipt.harness.detail = load ? { mode: load.mode, error: load.error, resolved: load.resolved } : null;
+    // Model harness outcome (reported by the harness process; package-writable, so informational only).
+    const mh = observe.parsePreload(sb.stdout, nonce).recs.find((r) => r.type === 'model-harness' && (!load || r.pid === load.pid));
+    receipt.harness.model = receipt.model && receipt.model.harness.source === 'model'
+      ? { staged: true, ran: !!mh, ok: mh ? mh.ok === true : null, error: mh && mh.error ? redact(String(mh.error)).text : null, fallback: mh && mh.ok === true ? null : 'plain require() (always run first)' }
+      : { staged: false, fallback: 'plain require() only: no usable model harness', reason: receipt.model ? receipt.model.status : null };
     receipt.sandbox = {
       container: sbName, fresh: true, containerId: sbInfo && sbInfo.Id, seconds: sbSeconds, exitCode: sb.code,
       endedBy: killed ? 'orchestrator-kill' : sb.code === 137 ? 'kill' : 'exit',
@@ -431,6 +451,54 @@ async function analyse(cfg, target, opts = {}) {
     fs.writeFileSync(receiptPath, body + '\n');
     return { ...result, receiptPath };
   }
+}
+
+// Package metadata for the model (S2-SEC a): manifest, README and entry excerpts,
+// read inside a hardened, network-less container from the read-only volume.
+const META_SCRIPT = `
+const fs=require('fs'),path=require('path');const name=process.argv[1];
+const root=path.join('/in/node_modules',name);const rd=(f,n)=>{try{const b=fs.readFileSync(f);return b.subarray(0,n).toString('utf8')}catch(_){return null}};
+let manifest=null;try{manifest=JSON.parse(rd(path.join(root,'package.json'),200000))}catch(_){}
+let readme=null;try{const f=fs.readdirSync(root).find(x=>/^readme(\\.|$)/i.test(x));if(f)readme=rd(path.join(root,f),8000)}catch(_){}
+let entryPath=null,entry=null;try{entryPath=require.resolve(root);if(!entryPath.startsWith(root+path.sep))entryPath=null;else entry=rd(entryPath,6000)}catch(_){}
+process.stdout.write('QP-META '+JSON.stringify({manifest,readme,entry,entryPath:entryPath&&path.relative(root,entryPath)})+'\\n');`;
+
+async function extractMeta(cfg, vol, name, L, pkgName) {
+  const r = await docker(['run', '--rm', '--name', name, ...L, '--network', 'none',
+    ...hardenedArgs(cfg, { tmpfs: [['/tmp', 16 * 1024 * 1024]] }),
+    '-v', `${vol}:/in:ro`, '--entrypoint', 'node', cfg.images.sandbox, '-e', META_SCRIPT, pkgName], { timeoutMs: 60000 });
+  const m = /QP-META (\{.*\})/.exec(r.stdout || '');
+  try { return m ? JSON.parse(m[1]) : {}; } catch (_) { return {}; }
+}
+
+// Harness check (C8 retry): the model harness runs once against the read-only
+// installed tree in a hardened container with NO network, untraced and discarded.
+// Its outcome only decides whether the harness is retried or dropped; it is never
+// an observation and never reaches the verdict.
+const HCHECK_SCRIPT = `
+const fs=require('fs'),Module=require('module');const src=fs.readFileSync(0,'utf8');
+const m=new Module('/work/.qp-model-harness.cjs',null);m.filename=m.id;m.paths=Module._nodeModulePaths('/work');
+const done=(r)=>{process.stdout.write('QP-HCHECK '+JSON.stringify(r)+'\\n');process.exit(0)};
+(async()=>{try{m._compile(src,m.filename);if(typeof m.exports==='function'){await Promise.race([Promise.resolve().then(()=>m.exports()),new Promise((_,j)=>setTimeout(()=>j(new Error('harness did not finish within 10 s')),10000))])}done({ok:true})}catch(e){done({ok:false,error:String(e&&(e.code||e.message)||e).slice(0,300)})}})();`;
+
+async function checkHarness(cfg, vol, name, L, code) {
+  const r = await docker(['run', '--rm', '-i', '--name', name, ...L, '--network', 'none',
+    ...hardenedArgs(cfg, { tmpfs: [['/tmp', 32 * 1024 * 1024], ['/home/qp', 16 * 1024 * 1024]] }),
+    '-e', 'HOME=/home/qp', '-v', `${vol}:/work:ro`, '--entrypoint', 'timeout', cfg.images.sandbox, '-s', 'KILL', '20', 'node', '-e', HCHECK_SCRIPT],
+  { timeoutMs: 60000, input: code });
+  const m = /QP-HCHECK (\{.*\})/.exec(r.stdout || '');
+  if (!m) return `harness check produced no result (exit ${r.code})`;
+  try { const v = JSON.parse(m[1]); return v.ok ? null : `harness threw: ${v.error}`; } catch (_) { return 'harness check result unreadable'; }
+}
+
+// The model harness is written into the volume (read-only inside the sandbox) by a
+// separate network-less container; it is never placed in an env var or argv.
+async function stageHarness(cfg, vol, name, L, code) {
+  await docker(['run', '--rm', '-i', '--name', name, ...L, '--network', 'none',
+    ...hardenedArgs(cfg, { tmpfs: [['/tmp', 16 * 1024 * 1024]] }),
+    '-v', `${vol}:/out`, '--entrypoint', 'node', cfg.images.sandbox, '-e',
+    "const fs=require('fs');const c=fs.readFileSync(0);fs.mkdirSync('/out/.qp',{recursive:true});fs.writeFileSync('/out/.qp/model-harness.cjs',c,{mode:0o444})"],
+  { timeoutMs: 60000, allowFail: false, input: code });
 }
 
 function keepTrace(cfg, taskId, text, truncated) {

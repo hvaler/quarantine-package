@@ -326,3 +326,73 @@ See `hostProbe` in the receipt.
   - `sandboxLeaving` = 0;
   - `dnsNonceLeaving` = 0 (the sandbox resolves `qp-<nonce>.probe.invalid`);
   - positive controls `inSubnet` > 0 (`ctlin` talks to the sinkhole over the bridge) and `controlLeaving` > 0 (`ctlout`, on a non-internal `ar-` network, sends to 1.1.1.1:80).
+
+## 9. Model loop (S2: C8–C11, S2-SEC)
+
+**Endpoint and configuration.** The endpoint is Vultr Serverless Inference, OpenAI-compatible: `POST <base>/chat/completions`, with `temperature: 0` and `max_tokens: 4000`.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `VULTR_INFERENCE_KEY` | API key. Only the orchestrator process reads it, at request time, and sends it only in the `Authorization` header. It is never printed or logged, and never put in an error, a receipt, a trace, the sandbox env or argv, or a mount | none (model status `no-key`; the verdict is still computed) |
+| `QP_MODEL` / `QP_MODEL_FALLBACK` | default model / fallback model (an empty fallback disables it) | `mimo-v2.6-pro` / `deepseek-v4.1-flash-1017` |
+| `QP_MODEL_OFF` | `1` disables the model (status `disabled`) | off |
+| `QP_MODEL_BASE_URL` | **tests only**: base URL of a fake endpoint, e.g. `http://127.0.0.1:<port>/v1` | `https://api.vultrinference.com/v1` |
+| `QP_MODEL_TIMEOUT_MS` | **tests only**: timeout of each request | 240000 |
+
+**Transport rules.**
+- A response body is read up to 2 MB; anything larger is `malformed`.
+- An HTTP error keeps only the status and the body size, never the body.
+- Every occurrence of the key in a reply is replaced by `[redacted]` before the reply is parsed or stored.
+- The default model is tried first, then the fallback once if the default gives no usable reply.
+
+**Model input (S2-SEC a).** The input is read from the installed package in the read-only volume, by a hardened container with no network (`ar-<prefix>-meta-<taskId>`). It contains:
+- the manifest fields `name`, `version`, `description`, `main`, `module`, `type`, `exports`, `bin`, `scripts` (each capped at 1000 characters);
+- up to 50 dependency names;
+- a README excerpt (6000 characters);
+- an entry-file excerpt (4000 characters).
+
+The total is about 16 KB. It contains no host environment and no host path. The system prompt marks the package data as untrusted and never to be followed.
+
+**Reply schema.** The reply is the JSON object in `choices[0].message.content`; a fenced ```json block or surrounding prose is tolerated.
+```json
+{"prediction": {"network": {"expected": true, "hosts": ["..."]},
+                "filesOutsidePackage": {"expected": false, "paths": ["..."]},
+                "childProcesses": {"expected": false, "commands": ["..."]}},
+ "harness": "<CommonJS source>",
+ "explanation": "<at most 3 sentences>"}
+```
+Every key is optional. Whatever is absent or invalid is listed in `model.missing`.
+
+**Harness form and placement (C8, S2-SEC b, c).**
+- The harness is CommonJS source. It refers to the package with plain `require('<name>')`; it is resolved from `/work`, the installed tree. If it exports a function, that function is awaited for up to 10 s.
+- **The plain `require()` of the package always runs first,** whatever the harness says. The model harness runs afterwards in the same harness process and can only add exercise. A harness that skips the import, or exports `0`, cannot prevent load-time code from running.
+- Everything the harness process does is observed as package activity. The harness cannot exclude, relabel or suppress observations, and the verdict never reads harness or model output (C4).
+
+**Retry (C8).**
+1. A harness is first compile-checked on the host, without running it.
+2. It then runs once in a **check container** (`ar-<prefix>-hcheck-<taskId>`): hardened, `--network none`, the installed tree mounted read-only at `/work`, untraced, discarded, with a 20 s kill. Its outcome only decides retry or drop; it is never an observation.
+3. A compile or check error is fed back to the model **once**, so there are exactly 2 calls, and the second carries the error text.
+4. If the retried harness also fails, no model harness is staged and the sandbox runs the plain `require()` only.
+
+**Staging.** A usable harness is written by a network-less container (`ar-<prefix>-stage-<taskId>`) from stdin into the volume, as `/in/.qp/model-harness.cjs` (read-only in the sandbox). It is never placed in env or argv.
+
+**Receipt fields (C9, C10).**
+- `model`: `{status, missing[], model, attempts[], prediction, explanation, harness}`.
+  - `status` is one of `ok`, `timeout`, `http-error`, `malformed`, `empty`, `network-error`, `no-key`, `disabled`.
+  - Each entry of `attempts[]` is `{purpose: prediction|harness-retry, model, status, latencyMs, httpStatus, usage: {prompt_tokens, completion_tokens, total_tokens}, detail}`.
+  - `harness` is `{source: model|null, retries: 0|1, firstError, finalError}`.
+- `harness.mode`: the fixed string `require, then the model harness when one is staged (S2)`.
+- `harness.model`: either `{staged: true, ran, ok, error, fallback}` or `{staged: false, fallback: "plain require() only: no usable model harness", reason}`. Here `ok` and `error` come from the harness process, which is package-writable, so they are informational only.
+- `predictionVsObserved[]`: one row per dimension (`network`, `filesOutsidePackage`, `childProcesses`), `{dimension, predicted, predictedDetail, observed, observedDetail, observationIds, status: match|mismatch|unknown}`.
+  - The observed side counts observations not attributed to npm: `net-dns|tcp|udp`, `fs-write` (outside `/work` and `/tmp`), and `spawn`.
+  - With no prediction, the status is `unknown`.
+- `explanation`: `{label: "explanation", source: "model <id>"|null, text, note}`. It is never the verdict.
+- A model failure of any kind leaves `verdict` computed as usual. `model.status` and `model.missing` say what is missing (C10).
+
+**C11 smoke (real endpoint, explicitly marked).** Run from the repo, with `VULTR_INFERENCE_KEY` in the user environment:
+```
+node src/cli.js smoke-model --out evidence/c11-smoke.json
+```
+- It analyses `express@4.21.2`, `lodash@4.17.21`, `chalk@4.1.2` and the hostile fixture.
+- Per package it writes the verdict, the model used, the status, the latency and tokens per attempt, the harness outcome, retries, and the prediction-vs-observed statuses.
+- The evidence file is secret-scanned and checked for the key before it is written. It never contains the key or any property of it.
