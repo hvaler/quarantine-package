@@ -166,6 +166,7 @@ Every receipt lists these in `knownLimitations`.
 | L-11 | `io_uring` is not traced. Node in the sandbox never uses it, and the default Docker seccomp profile denies it to native code. |
 | L-13 | A native addon (`.node`) loaded by the package can read env variables without leaving a record. Only the "tried to read a key" signal is lost. |
 | L-14 | The web service user is in the `docker` group, which is root-equivalent, so a compromise of the web process would be a host compromise. Mitigations: no admin or Docker route, argv-only calls (never a shell), systemd hardening, and the app bound to 127.0.0.1 behind Caddy. Rootless Docker or a socket proxy is future work. |
+| L-15 | Test-only, not a product limitation. On a Linux host (such as the node 22 deploy VM), the preload's role check (H-1) demotes the test process, so the latch unit tests cannot detect a latch regression (S2j/S2k). Any change to `preload.cjs` or `harness.cjs` needs a unit run on a non-Linux host (the developer's node 24 run) plus the runtime S2 suite. |
 | H-1 | **Done.** The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
