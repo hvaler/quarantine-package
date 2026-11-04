@@ -231,7 +231,10 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   // ---- env access (preload) and env enumeration via env/printenv
   for (const p of pre.filter((x) => x.type === 'env-read' || x.type === 'env-enumerate')) {
     const procActor = actorOf(p.pid);
-    let actor = procActor === 'harness-process' ? (p.actor === 'package' ? 'package' : 'harness') : procActor;
+    // F-S2-1: inside the harness process only a record the preload marked exactly
+    // 'harness' (the product's own harness.cjs, before the package phase) is excluded;
+    // anything else, a missing or unknown actor included, is the package.
+    let actor = procActor === 'harness-process' ? (p.actor === 'harness' ? 'harness' : 'package') : procActor;
     if (procActor === 'unattributed' && p.pid !== undefined && !tr.parent.has(p.pid)) actor = 'unattributed';
     if (p.type === 'env-read') add({ kind: 'env-read', actor, pid: p.pid, exe: exeOf(p.pid), extra: { name: p.name } });
     else add({ kind: 'env-enumerate', actor, pid: p.pid, exe: exeOf(p.pid), extra: { rule: 'c2 (observation only)' } });
@@ -240,8 +243,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   // ---- spawned processes (package side), env/printenv as enumeration
   let spawns = 0;
   const rolePids = new Set([roles.npmPid, roles.harnessPid, roles.scanPid, roles.stagePid].filter((p) => p !== null));
+  const roleLaunchSeen = new Set();
   for (const e of tr.events.filter((x) => x.type === 'exec')) {
-    if (rolePids.has(e.pid)) continue; // the orchestrator's own npm, harness, scan and stage execs
+    // Only the launch exec of the orchestrator's own npm, harness, scan and stage is
+    // skipped (F-S2-1 audit): a later exec by the harness pid (package or model-harness
+    // code replacing the process) is a package spawn.
+    if (rolePids.has(e.pid) && !roleLaunchSeen.has(e.pid)) { roleLaunchSeen.add(e.pid); continue; }
     const actor = forRules(actorOf(e.pid));
     if (!COUNTED.has(actor)) continue;
     if (/\/(env|printenv)$/.test(e.path) && e.argv.length <= 1) {

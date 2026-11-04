@@ -15,6 +15,7 @@ const nonce = process.env.QP_TASK_NONCE || 'none';
 const role = process.env.QP_ROLE || 'package';
 delete process.env.QP_ROLE; // descendants never inherit a role: they are package code
 const PKG_ROOTS = ['/work/node_modules/'];
+const HARNESS_FILE = '/opt/qp/harness.cjs';
 const KEY_LIKE = /(^|[_-])(API_?KEY|KEY|TOKEN|SECRET|PASS(WORD)?|PASSWD|CREDENTIALS?)([_-]|$)/i;
 
 let busy = false;
@@ -52,7 +53,11 @@ function stackActor() {
   Error.captureStackTrace(holder, stackActor);
   Error.stackTraceLimit = saved;
   const stack = String(holder.stack || '');
-  return PKG_ROOTS.some((r) => stack.includes(r)) ? 'package' : 'harness';
+  // Fail closed (F-S2-1): only a read whose stack shows the product's own
+  // /opt/qp/harness.cjs, and no package frame, is the harness; an unknown origin
+  // is the package.
+  if (PKG_ROOTS.some((r) => stack.includes(r))) return 'package';
+  return stack.includes(HARNESS_FILE) ? 'harness' : 'package';
 }
 
 emit({ type: 'hb', argv: process.argv.slice(0, 2), execPath: process.execPath });

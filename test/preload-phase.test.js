@@ -26,7 +26,7 @@ function run(script) {
 
 test('F-S2-1: a model-harness env read after the product load is attributed to the package', () => {
   const recs = run(`
-    const before = process.env.AWS_SECRET_ACCESS_KEY; // product settings phase
+    const before = process.env.AWS_SECRET_ACCESS_KEY; // not from /opt/qp/harness.cjs
     const latch = globalThis[Symbol.for('qp.packagePhase')];
     if (typeof latch !== 'function') throw new Error('no latch');
     latch();
@@ -35,7 +35,8 @@ test('F-S2-1: a model-harness env read after the product load is attributed to t
     m._compile("module.exports = process.env.NPM_TOKEN;", '/work/.qp-model-harness.cjs');
   `);
   const reads = recs.filter((r) => r.type === 'env-read');
-  assert.deepEqual(reads.map((r) => [r.name, r.actor]), [['AWS_SECRET_ACCESS_KEY', 'harness'], ['NPM_TOKEN', 'package']]);
+  // The simulated pre-latch read has no /opt/qp/harness.cjs frame, so it is the package too (fail closed).
+  assert.deepEqual(reads.map((r) => [r.name, r.actor]), [['AWS_SECRET_ACCESS_KEY', 'package'], ['NPM_TOKEN', 'package']]);
 });
 
 test('F-S2-1: after the latch, a read with no package frame on the stack (bound builtin, timer) is the package', () => {
@@ -63,4 +64,74 @@ test('F-S2-1: harness.cjs enters the package phase before its own require/resolv
   assert.ok(latch > 0, 'harness.cjs calls the latch');
   assert.ok(latch < src.indexOf('require.resolve(name'), 'latch before the package resolve/require');
   assert.ok(latch < src.indexOf('runModelHarness()'.replace('()', '')) || true);
+});
+
+test('F-S2-1: before the latch, a read whose stack has no product harness frame is the package (unknown origin fails closed)', () => {
+  const recs = run(`void process.env.NPM_TOKEN;`);
+  assert.deepEqual(recs.filter((r) => r.type === 'env-read').map((r) => r.actor), ['package']);
+});
+
+test('F-S2-1: the product harness.cjs own fixed reads stay harness', () => {
+  const recs = run(`
+    const Module = require('node:module');
+    const m = new Module('/opt/qp/harness.cjs', null);
+    m._compile("module.exports = process.env.QP_TASK_NONCE_KEY;", '/opt/qp/harness.cjs');
+  `.replace('QP_TASK_NONCE_KEY', 'AWS_SECRET_ACCESS_KEY'));
+  assert.deepEqual(recs.filter((r) => r.type === 'env-read').map((r) => [r.name, r.actor]), [['AWS_SECRET_ACCESS_KEY', 'harness']]);
+});
+
+// ---- observe side (pure)
+const { build } = require('../src/observe');
+const { decide } = require('../src/verdict');
+const ENV_OK = '["PATH=/usr/bin", "NODE_OPTIONS=--require=/opt/qp/preload.cjs", "QP_TASK_NONCE=x"]';
+const TRACE = [
+  '1 21:00:00.000001 clone(child_stack=NULL, flags=SIGCHLD) = 10',
+  '10 21:00:00.000100 execve("/opt/qp/stage.sh", ["/opt/qp/stage.sh", "pkg"], 0x0) = 0',
+  '10 21:00:00.000200 clone(child_stack=NULL, flags=SIGCHLD) = 40',
+  `40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ${ENV_OK}) = 0`,
+  '40 21:00:00.000301 openat(AT_FDCWD, "/opt/qp/preload.cjs", O_RDONLY|O_CLOEXEC) = 3</opt/qp/preload.cjs>',
+];
+const obsWith = (recs, extraTrace = []) => build({
+  traceText: [...TRACE, ...extraTrace].join('\n'),
+  sinkholeText: '{"type": "ready", "t": "2026-11-04T09:00:00.000000Z"}\n',
+  stdoutText: [{ type: 'hb', pid: 40 }, { type: 'load', pid: 40, ok: true, mode: 'fallback-require' }, ...recs].map((r) => `QPEV ${NONCE} ${JSON.stringify(r)}`).join('\n'),
+  nonce: NONCE, sandboxEndedNormally: true, sinkholeIp: '172.19.0.2',
+}).observations;
+
+test('F-S2-1: a model-harness key read (preload actor package) gives (c1) do-not-install', () => {
+  const v = decide({ observations: obsWith([{ type: 'env-read', pid: 40, name: 'NPM_TOKEN', actor: 'package' }]) });
+  assert.equal(v.verdict, 'do-not-install');
+  assert.ok(v.rules.some((r) => r.id === 'c1'));
+});
+
+test('F-S2-1: in the harness process a record with a missing or unknown actor is the package; only "harness" is excluded', () => {
+  for (const actor of [undefined, 'weird', 'Harness']) {
+    const v = decide({ observations: obsWith([{ type: 'env-read', pid: 40, name: 'NPM_TOKEN', ...(actor === undefined ? {} : { actor }) }]) });
+    assert.ok(v.rules.some((r) => r.id === 'c1'), `actor ${actor}`);
+  }
+  const ex = decide({ observations: obsWith([{ type: 'env-read', pid: 40, name: 'NPM_TOKEN', actor: 'harness' }]) });
+  assert.equal(ex.rules.some((r) => r.id === 'c1'), false, 'the product harness own read stays excluded');
+});
+
+test('F-S2-1 audit: a later exec by the harness pid itself is a package spawn (only the launch exec is skipped)', () => {
+  const obs = obsWith([], [`40 21:00:00.000500 execve("/usr/bin/printenv", ["printenv", "NPM_TOKEN"], ${ENV_OK}) = 0`]);
+  assert.ok(obs.some((o) => o.kind === 'spawn' && o.pid === 40 && o.actor === 'package'), JSON.stringify(obs.filter((o) => o.kind === 'spawn')));
+  assert.ok(obs.some((o) => o.kind === 'env-read' && o.name === 'NPM_TOKEN' || (o.extra && o.extra.name === 'NPM_TOKEN')));
+  assert.ok(decide({ observations: obs }).rules.some((r) => r.id === 'c1'));
+});
+
+test('F-S2-2: a package child that sets QP_ROLE=qp-scan or harness itself is still the package (role taken from the trace, not the record)', () => {
+  const ENV = (r) => `["PATH=/usr/bin", "NODE_OPTIONS=--require=/opt/qp/preload.cjs", "QP_TASK_NONCE=x", "QP_ROLE=${r}"]`;
+  for (const role of ['qp-scan', 'harness']) {
+    const obs = obsWith([{ type: 'hb', pid: 60 }, { type: 'env-read', pid: 60, name: 'NPM_TOKEN', actor: role, role }], [
+      '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+      `60 21:00:00.000500 execve("/usr/local/bin/node", ["node", "a.js"], ${ENV(role)}) = 0`,
+      '60 21:00:00.000501 openat(AT_FDCWD, "/opt/qp/preload.cjs", O_RDONLY|O_CLOEXEC) = 3</opt/qp/preload.cjs>',
+    ]);
+    const e = obs.find((o) => o.kind === 'env-read' && o.pid === 60);
+    assert.equal(e.actor, 'package', role);
+    const v = decide({ observations: obs });
+    assert.ok(v.rules.some((r) => r.id === 'c1'), `c1 for spoofed ${role}`);
+    assert.equal(v.verdict, 'do-not-install');
+  }
 });
