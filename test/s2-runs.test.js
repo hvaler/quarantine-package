@@ -21,7 +21,8 @@ const traceFor = (round) => [
   '10 21:00:00.000900 exit_group(0) = ?',
 ].join('\n');
 
-test('S2 (B): runtime harness failure -> one retry -> second traced run; verdict on the union; a marker failing only in run 2 fails', async () => {
+// hbRun: the only run whose harness heartbeats; the other run fails instrumentation.
+async function twoRunCase(hbRun) {
   const dockerPath = require.resolve('../src/docker');
   const lifePath = require.resolve('../src/lifecycle');
   const orchPath = require.resolve('../src/orchestrator');
@@ -65,7 +66,7 @@ test('S2 (B): runtime harness failure -> one retry -> second traced run; verdict
           { type: 'sandbox-scan', keyLikeEnvNames: [], ignoredImageVars: [], dockerSockPresent: [], mounts: [], envNamesScanned: 5 },
           { type: 'model-harness', pid: 40, ok: false, error: `TypeError: boom in run ${sandboxRound}` },
           // run 2 has NO heartbeat for pid 40: instrumentation fails in run 2 only
-          ...(sandboxRound === 1 ? [{ type: 'hb', pid: 40 }] : []),
+          ...(sandboxRound === hbRun ? [{ type: 'hb', pid: 40 }] : []),
         ];
         h.stdout = `QP-TRACER-ATTACHED\n${recs.map((r) => `QPEV ${nonce} ${JSON.stringify(r)}`).join('\n')}\n`;
         return resolved(h);
@@ -108,7 +109,7 @@ test('S2 (B): runtime harness failure -> one retry -> second traced run; verdict
     assert.ok(a && a.observationIds.every((id) => !id.startsWith('r2-')), 'rule a fired from run 1');
     // a marker failing in run 2 only fails the union
     assert.equal(receipt.completeness['instrumentation-heartbeat'].ok, false);
-    assert.deepEqual(receipt.completeness['instrumentation-heartbeat'].runs.map((r) => r.ok), [true, false]);
+    assert.deepEqual(receipt.completeness['instrumentation-heartbeat'].runs.map((r) => r.ok), hbRun === 1 ? [true, false] : [false, true]);
     assert.equal(receipt.harness.model.staged, true);
     assert.match(receipt.harness.model.fallback, /plain require\(\) only/);
     assert.equal(receipt.model.harness.retries, 1);
@@ -137,4 +138,9 @@ test('S2 (B): runtime harness failure -> one retry -> second traced run; verdict
     process.removeAllListeners('SIGTERM');
     fs.rmSync(receiptsDir, { recursive: true, force: true });
   }
-});
+}
+
+test('S2 (B): runtime harness failure -> one retry -> second traced run; verdict on the union; a marker failing only in run 2 fails', () => twoRunCase(1));
+
+// S2b (auditor mutant): the union of markers must not take the last run only.
+test('S2 (B): a marker failing only in run 1 still fails the union (not last-run-only)', () => twoRunCase(2));

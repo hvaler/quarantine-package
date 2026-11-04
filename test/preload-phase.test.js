@@ -259,3 +259,41 @@ test('F-S2-3 audit: a node spawned with diagnostic-report options (argv or NODE_
   ]);
   assert.ok(decide({ observations: viaOpts }).rules.some((r) => r.id === 'c1'));
 });
+
+// S2j / S2k (auditor mutants): behavioural test of the real harness.cjs with the real
+// preload. harness.cjs is compiled under its sandbox path /opt/qp/harness.cjs; a hook
+// on module resolution reads NPM_TOKEN while harness.cjs resolves the package (so the
+// stack holds a /opt/qp/harness.cjs frame). That read must be the package: it fails
+// if harness.cjs does not enter the package phase before resolving (S2j) or if the
+// preload ignores the latch (S2k).
+test('S2j/S2k: the real harness.cjs enters the package phase before it resolves the package (behavioural)', () => {
+  const HARNESS = path.join(__dirname, '..', 'images', 'sandbox', 'runtime', 'harness.cjs');
+  const launcher = `
+    const fs = require('fs'); const Module = require('module');
+    const orig = Module._resolveFilename;
+    Module._resolveFilename = function (req, ...rest) {
+      if (req === 'qp-test-nonexistent-pkg') { void process.env.NPM_TOKEN; }
+      return orig.call(this, req, ...rest);
+    };
+    process.argv = [process.argv[0], '/opt/qp/harness.cjs', 'qp-test-nonexistent-pkg'];
+    const m = new Module('/opt/qp/harness.cjs', null);
+    m.filename = '/opt/qp/harness.cjs';
+    m.paths = Module._nodeModulePaths('/opt/qp');
+    m._compile(fs.readFileSync(${JSON.stringify(HARNESS)}, 'utf8'), '/opt/qp/harness.cjs');
+  `;
+  const recs = run(launcher, { PATH: process.env.PATH, QP_TASK_NONCE: NONCE, QP_ROLE: 'harness', QP_HARNESS_GRACE_MS: '1', NPM_TOKEN: 'x' });
+  const reads = recs.filter((r) => r.type === 'env-read' && r.name === 'NPM_TOKEN');
+  assert.ok(reads.length >= 1, 'the hook read was recorded');
+  assert.deepEqual([...new Set(reads.map((r) => r.actor))], ['package']);
+  assert.ok(recs.some((r) => r.type === 'load'), 'the real harness ran (load record)');
+});
+
+test('S2k: a read whose stack shows /opt/qp/harness.cjs is harness before the latch and package after it', () => {
+  const launcher = `
+    const Module = require('module');
+    const m = new Module('/opt/qp/harness.cjs', null);
+    m._compile("void process.env.API_KEY; globalThis[Symbol.for('qp.packagePhase')](); void process.env.NPM_TOKEN;", '/opt/qp/harness.cjs');
+  `;
+  const recs = run(launcher, { PATH: process.env.PATH, QP_TASK_NONCE: NONCE, QP_ROLE: 'harness' });
+  assert.deepEqual(envReads(recs), ['API_KEY:harness', 'NPM_TOKEN:package']);
+});
