@@ -112,6 +112,23 @@ test('S2 (B): runtime harness failure -> one retry -> second traced run; verdict
     assert.equal(receipt.harness.model.staged, true);
     assert.match(receipt.harness.model.fallback, /plain require\(\) only/);
     assert.equal(receipt.model.harness.retries, 1);
+    // Enforced (analyst c42cee7a): every sandbox mounts the task volume read-only; the
+    // only writable mount of the volume after the download is the stage container,
+    // which runs node -e with our fixed script only (no package code, no network).
+    const vol = calls.find((c) => c.startsWith('volume create')).split(' ').pop();
+    const sandboxCreates = calls.filter((c) => c.startsWith('create ') && c.includes('/opt/qp/run.sh'));
+    assert.equal(sandboxCreates.length, 2);
+    for (const c of sandboxCreates) {
+      assert.ok(c.includes(`-v ${vol}:/in:ro`), c);
+      assert.equal(new RegExp(`${vol}:[^ ]*(?<!:ro)( |$)`).test(c.replace(`${vol}:/in:ro`, '')), false, `no other mount of the volume: ${c}`);
+    }
+    const writers = calls.filter((c) => c.includes(`${vol}:`) && !c.includes(`${vol}:/in:ro`) && !c.startsWith('create ') );
+    assert.equal(writers.length, 2, 'two stage writes (run 1 and run 2)');
+    for (const c of writers) {
+      assert.match(c, /-stage-/, `only the stage container mounts the volume writable: ${c}`);
+      assert.match(c, /--network none/);
+      assert.match(c, /--entrypoint node .* -e const fs=require\('fs'\);const c=fs\.readFileSync\(0\)/, 'stage runs our fixed script');
+    }
   } finally {
     if (saved.d) require.cache[dockerPath] = saved.d; else delete require.cache[dockerPath];
     if (saved.l) require.cache[lifePath] = saved.l; else delete require.cache[lifePath];
