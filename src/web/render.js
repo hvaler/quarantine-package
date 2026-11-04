@@ -174,11 +174,11 @@ const DEMOS = Object.freeze([
   { id: 'fastify', label: 'fastify@5.12.4', kind: 'registry', spec: 'fastify@5.12.4', icon: 'box', title: 'fastify@5.12.4', mono: true, desc: "Real dependency from the author's payments project.", expect: 'install' },
   { id: 'netbenign', label: 'Install script that downloads (repo fixture)', kind: 'fixture', fixture: 'netbenign', icon: 'download', title: 'Install script that downloads', desc: 'A legitimate-looking script that fetches a binary.', expect: 'review' },
   { id: 'hostile', label: 'Hostile package (repo fixture)', kind: 'fixture', fixture: 'hostile', icon: 'alert', title: 'Hostile package', desc: 'Writes to /etc, reaches for docker.sock and credentials, POSTs data out.', expect: 'do-not-install' },
-  { id: 'forkbomb', label: 'Fork bomb (repo fixture)', kind: 'fixture', fixture: 'forkbomb', icon: 'fork', title: 'Fork bomb', desc: 'Spawns processes without limit; the pids limit contains it.', expect: 'contained' },
-  { id: 'loop', label: 'Infinite loop (repo fixture)', kind: 'fixture', fixture: 'loop', icon: 'clock', title: 'Infinite loop', desc: 'Never exits; the wall clock kills it.', expect: 'contained' },
+  { id: 'forkbomb', label: 'Fork bomb (repo fixture)', kind: 'fixture', fixture: 'forkbomb', icon: 'fork', title: 'Fork bomb', desc: 'Spawns processes without limit; the pids limit stops it in seconds.', expect: 'do-not-install' },
+  { id: 'loop', label: 'Infinite loop (repo fixture)', kind: 'fixture', fixture: 'loop', icon: 'clock', title: 'Infinite loop', desc: 'Never exits; the 60 s wall clock kills it.', expect: 'do-not-install' },
 ]);
 
-const EXAMPLES = Object.freeze([['install', '514e574600'], ['review', 'd5af19b228'], ['do-not-install', '8b42cfb93e']]);
+const EXAMPLES = Object.freeze([['install', 'd6fbf70332'], ['review', 'd5af19b228'], ['do-not-install', '8b42cfb93e']]);
 
 const STEPS = [
   ['download', 'Download', 'Fetched from the registry with install scripts off.', 'The tarball is fetched with install scripts off. Nothing runs yet.'],
@@ -201,7 +201,7 @@ ${d.kind === 'fixture' ? '<span class="tag">repo fixture, never published</span>
 <p class="lede">Run an npm package in a sealed sandbox on Vultr and see what it tried to do, before you install it.</p>
 ${notice ? `<p class="notice" role="status">${icon('info')}<span>${esc(notice)}</span></p>` : ''}
 <form class="analyse" method="post" action="/analyse"><label for="spec">npm package as <span class="mono">name@version</span></label>
-<div class="row"><input id="spec" type="text" name="spec" placeholder="lodash@4.17.21" required maxlength="214" autocomplete="off" spellcheck="false"><button class="btn btn-lg" type="submit">Analyse${icon('arrow')}</button></div>
+<div class="row"><input id="spec" type="text" name="spec" placeholder="e.g. lodash@4.17.21" required maxlength="214" autocomplete="off" spellcheck="false"><button class="btn btn-lg" type="submit">Analyse${icon('arrow')}</button></div>
 <p class="hint">Every run ends in a public receipt page you can link to.</p></form>
 <section class="sec" id="how" aria-labelledby="how-h"><p class="kick" id="how-h">How it works</p>
 <ol class="steps">${STEPS.map(([ic, h, short]) => `<li>${icon(ic)}<h3>${h}</h3><p>${short}</p></li>`).join('')}</ol></section>

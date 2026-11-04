@@ -5,7 +5,7 @@ The containment moment is step 3.
 
 ## 1. The idea (20 s)
 
-**Screen:** the home page. It has the input `name@version` and three demo buttons.
+**Screen:** the home page. It has the input `name@version` and six demo cards.
 
 **Say:** "Before you install an npm package, Quarantine Package runs it in a sealed sandbox on a Vultr VM. A
 model on Vultr Serverless Inference predicts what the package will do, and fixed rules decide from what
@@ -31,7 +31,7 @@ really happened."
 while true; do curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" https://<your-dns-name>/healthz; sleep 1; done
 ```
 
-**Click:** "Hostile package (repo fixture)".
+**Click:** "Run demo" on the "Hostile package" card.
 
 **Screen, while it runs:** the terminal keeps printing `200 0.0xs`, so the backend still answers.
 
@@ -54,7 +54,7 @@ was blocked or caught, the data went only to our sinkhole, and the backend kept 
 
 ## 4. Clean slate (30 s)
 
-**Click:** "Install script that downloads (repo fixture)".
+**Click:** "Run demo" on the "Install script that downloads" card.
 
 **Screen:**
 - A new task id, with **Verdict: review**.

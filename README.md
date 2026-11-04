@@ -79,7 +79,8 @@ Deployment steps: [`docs/DEPLOY.md`](docs/DEPLOY.md). Interface details: [`docs/
 
 ## Where the containment moment is
 
-Run the **"Hostile package (repo fixture)"** demo on the home page. Its install script tries to:
+Run the **"Hostile package"** demo card on the home page (a repo fixture, never published). Its install
+script tries to:
 - write to `/etc` and to the home directory;
 - look for `docker.sock`;
 - count key-like environment variables;
@@ -92,6 +93,12 @@ The receipt shows:
 - **"Sandbox destroyed: yes"**.
 
 `/healthz` keeps answering during the run, and the next analysis runs in a fresh sandbox.
+
+Two more containment demos on the home page, both repo fixtures: a **fork bomb** stopped by the pids limit in
+about 7 s ([receipt](https://qp.hugovaler.com/r/93b65a40ad)) and an **infinite loop** killed by the 60 s wall
+clock ([receipt](https://qp.hugovaler.com/r/7480a24604)). Both get `do-not-install` (rule `e`, task ended by a
+limit) and leave nothing behind.
+
 [`docs/DEMO.md`](docs/DEMO.md) is the step-by-step demo script.
 
 ## Tried on real dependencies
