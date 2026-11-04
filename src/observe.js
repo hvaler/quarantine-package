@@ -129,6 +129,7 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
 
   // ---- credential / docker.sock access and /proc/<pid>/environ
   const sensitive = (p) => DOCKER_SOCKETS.includes(p) || CREDENTIAL_PATHS.some((c) => under(p, c));
+  const isProcEnviron = (p) => typeof p === 'string' && /(^|\/)environ$/.test(p) && /(^|\/)proc(\/|$)/.test(p);
   const seenAccess = new Set();
   const unresolvedAccess = [];
   for (const e of tr.events.filter((x) => x.type === 'fs-read' || x.type === 'fs-stat' || x.type === 'fs-write' || x.type === 'net-unix' || x.type === 'fs-link-target')) {
@@ -140,7 +141,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
       if (unresolvedAccess.length < 20) unresolvedAccess.push({ pid: e.pid, syscall: e.syscall, rawPath: e.rawPath === null ? '(truncated)' : String(e.rawPath).slice(0, 200) });
       continue;
     }
-    if (e.path && /^\/proc\/(\d+|self|thread-self)\/environ$/.test(e.path)) {
+    // F-S2-3 backstop (independent of the preload): any access whose last component
+    // is "environ" and whose resolved or RAW path goes through /proc counts, so
+    // /proc/N/task/M/environ, /proc/self/root/proc/self/environ and
+    // /proc/self/cwd/../.. forms (lexical normalisation cannot follow those links)
+    // are all a read of the whole env (c1). Fail closed.
+    if (isProcEnviron(e.path) || isProcEnviron(e.rawPath)) {
       add({ kind: 'proc-environ', actor, pid: e.pid, exe: exeOf(e.pid), path: e.path, blocked: e.blocked });
       continue;
     }
@@ -229,6 +235,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   }
 
   // ---- env access (preload) and env enumeration via env/printenv
+  // F-S2-3: a diagnostic report (process.report) is a read of the whole env (c1).
+  for (const p of pre.filter((x) => x.type === 'env-dump')) {
+    const procActor = actorOf(p.pid);
+    const actor = procActor === 'harness-process' ? (p.actor === 'harness' ? 'harness' : 'package') : procActor;
+    add({ kind: 'proc-environ', actor, pid: p.pid, exe: exeOf(p.pid), path: String(p.via || 'process.report'), blocked: false });
+  }
   for (const p of pre.filter((x) => x.type === 'env-read' || x.type === 'env-enumerate')) {
     const procActor = actorOf(p.pid);
     // F-S2-1: inside the harness process only a record the preload marked exactly
@@ -261,6 +273,12 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
         if (/\/env$/.test(e.path) && !KEY_LIKE.test(name)) continue; // env's other args are a command, not a variable
         add({ kind: 'env-read', actor, pid: e.pid, exe: e.path, extra: { name, via: `exec ${e.path.split('/').pop()}` } });
       }
+    }
+    // F-S2-3: a node started with diagnostic-report options writes the whole env to a
+    // report file natively (no preload record): a read of the whole env (c1).
+    const reportOpt = (v) => typeof v === 'string' && /--report-(on-signal|uncaught-exception|on-fatalerror|directory|filename|compact|signal|exclude-network)|--diagnostic-dir/.test(v);
+    if (e.argv.some(reportOpt) || (e.envp || []).some((v) => typeof v === 'string' && v.startsWith('NODE_OPTIONS=') && reportOpt(v))) {
+      add({ kind: 'proc-environ', actor, pid: e.pid, exe: e.path, path: 'node diagnostic report options', blocked: false });
     }
     spawns += 1;
     if (spawns <= MAX_SPAWNS) add({ kind: 'spawn', actor, pid: e.pid, exe: e.path, extra: { argv: e.argv.slice(0, 6).map((a) => a.slice(0, 120)) } });

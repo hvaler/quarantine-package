@@ -12,12 +12,12 @@ const { spawnSync } = require('node:child_process');
 const PRELOAD = path.join(__dirname, '..', 'images', 'sandbox', 'runtime', 'preload.cjs');
 const NONCE = 'n0nce';
 
-function run(script) {
+function run(script, envOverride) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-pre-'));
   const f = path.join(dir, 'harness-sim.cjs');
   fs.writeFileSync(f, script);
   const r = spawnSync(process.execPath, ['--require', PRELOAD, f], {
-    env: { PATH: process.env.PATH, QP_TASK_NONCE: NONCE, QP_ROLE: 'harness', NPM_TOKEN: 'x', AWS_SECRET_ACCESS_KEY: 'y' },
+    env: envOverride || { PATH: process.env.PATH, QP_TASK_NONCE: NONCE, QP_ROLE: 'harness', NPM_TOKEN: 'x', AWS_SECRET_ACCESS_KEY: 'y' },
     encoding: 'utf8',
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -154,4 +154,108 @@ test('F-S2-2: the genuine qp-scan (stage child running /opt/qp/scan.cjs) stays e
   assert.match(JSON.stringify(marker), /QP_ROLE=npm on a process that is not/);
   assert.notEqual(decide({ observations: npmObs }).verdict, 'install');
   assert.ok(npmObs.some((o) => o.kind === 'spawn' && o.pid === 60 && o.actor === 'package'));
+});
+
+// ---- F-S2-3: key reads that bypass the get trap
+// As in the sandbox: no key-like name in the env (C7), so only an explicit ask reaches one.
+const SANDBOX_ENV = { PATH: process.env.PATH, QP_TASK_NONCE: NONCE, QP_ROLE: 'harness', HOME: '/home/qp', NODE_ENV: 'production' };
+const pkgRun = (code) => run(`globalThis[Symbol.for('qp.packagePhase')](); ${code}`, SANDBOX_ENV);
+const envReads = (recs) => recs.filter((r) => r.type === 'env-read').map((r) => `${r.name}:${r.actor}`);
+
+test('F-S2-3: a key read through a property descriptor is an env read', () => {
+  assert.deepEqual(envReads(pkgRun("void Object.getOwnPropertyDescriptor(process.env, 'GITHUB_TOKEN');")), ['GITHUB_TOKEN:package']);
+  assert.deepEqual(envReads(pkgRun("void Reflect.getOwnPropertyDescriptor(process.env, 'GITHUB_TOKEN');")), ['GITHUB_TOKEN:package']);
+  assert.deepEqual(envReads(pkgRun("void Object.prototype.hasOwnProperty.call(process.env, 'GITHUB_TOKEN');")), ['GITHUB_TOKEN:package']);
+  assert.deepEqual(envReads(pkgRun("void Object.getOwnPropertyDescriptors(process.env);")), [], 'descriptors of existing non-key vars only');
+});
+
+test('F-S2-3: an existence probe of a key-like name ("in") is an env read', () => {
+  assert.deepEqual(envReads(pkgRun("void ('GITHUB_TOKEN' in process.env);")), ['GITHUB_TOKEN:package']);
+});
+
+test('F-S2-3: enumeration alone (Object.keys, entries, spread, JSON) records no key read when no key-like var exists', () => {
+  const recs = pkgRun("void Object.keys(process.env); void Object.entries(process.env); void ({...process.env}); void JSON.stringify(process.env); for (const k in process.env) {}");
+  assert.deepEqual(envReads(recs), []);
+  assert.ok(recs.some((r) => r.type === 'env-enumerate'));
+});
+
+test('F-S2-3: every value or existence channel of a key-like name is an env read (one per channel)', () => {
+  const channels = {
+    get: "void process.env.GITHUB_TOKEN;",
+    computed: "const k='GITHUB_'+'TOKEN'; void process.env[k];",
+    reflectGet: "void Reflect.get(process.env, 'GITHUB_TOKEN');",
+    descriptor: "void Object.getOwnPropertyDescriptor(process.env, 'GITHUB_TOKEN');",
+    reflectDescriptor: "void Reflect.getOwnPropertyDescriptor(process.env, 'GITHUB_TOKEN');",
+    hasOwn: "void Object.hasOwn(process.env, 'GITHUB_TOKEN');",
+    hasOwnProperty: "void Object.prototype.hasOwnProperty.call(process.env, 'GITHUB_TOKEN');",
+    in: "void ('GITHUB_TOKEN' in process.env);",
+    reflectHas: "void Reflect.has(process.env, 'GITHUB_TOKEN');",
+    set: "process.env.GITHUB_TOKEN = 'x';",
+    define: "Object.defineProperty(process.env, 'GITHUB_TOKEN', { value: 'x', writable: true, enumerable: true, configurable: true });",
+    delete: "delete process.env.GITHUB_TOKEN;",
+  };
+  for (const [name, code] of Object.entries(channels)) {
+    assert.deepEqual(envReads(pkgRun(code)), ['GITHUB_TOKEN:package'], name);
+  }
+});
+
+test('F-S2-3: util.inspect / console.log of process.env show no value (the Proxy target holds none)', () => {
+  const recs = pkgRun("process.stdout.write('INSPECT ' + require('util').inspect(process.env) + '\n');");
+  const r = spawnSync(process.execPath, ['--require', PRELOAD, '-e', "globalThis[Symbol.for('qp.packagePhase')](); process.stdout.write(require('util').inspect(process.env)); console.log(process.env);"],
+    { env: { ...SANDBOX_ENV, SOME_VALUE: 'visible-if-leaked' }, encoding: 'utf8' });
+  assert.equal(r.stdout.includes('visible-if-leaked'), false, r.stdout.slice(0, 200));
+  assert.ok(Array.isArray(recs));
+});
+
+test('F-S2-3: semantics kept for ordinary code (values, keys, assignment, spawn env)', () => {
+  const r = spawnSync(process.execPath, ['--require', PRELOAD, '-e', `
+    globalThis[Symbol.for('qp.packagePhase')]();
+    const out = [process.env.NODE_ENV, Object.keys(process.env).includes('HOME'), ({...process.env}).HOME, JSON.parse(JSON.stringify(process.env)).HOME];
+    process.env.MY_FLAG = '1'; out.push(process.env.MY_FLAG, 'MY_FLAG' in process.env);
+    delete process.env.MY_FLAG; out.push(process.env.MY_FLAG === undefined);
+    out.push(require('child_process').execFileSync(process.execPath, ['-e', 'process.stdout.write(process.env.HOME)'], { encoding: 'utf8' }));
+    process.stdout.write('RES ' + JSON.stringify(out));`], { env: SANDBOX_ENV, encoding: 'utf8' });
+  const res = JSON.parse(/RES (.*)/.exec(r.stdout)[1]);
+  assert.deepEqual(res, ['production', true, '/home/qp', '/home/qp', '1', true, true, '/home/qp']);
+});
+
+test('F-S2-3 backstop: an open of /proc/self/environ by package code gives (c1), independent of the preload', () => {
+  const obs = obsWith([], ['40 21:00:00.000600 openat(AT_FDCWD, "/proc/self/environ", O_RDONLY|O_CLOEXEC) = 3']);
+  assert.ok(obs.some((o) => o.kind === 'proc-environ' && o.actor === 'package'));
+  assert.ok(decide({ observations: obs }).rules.some((r) => r.id === 'c1'));
+  const other = obsWith([], ['40 21:00:00.000600 openat(AT_FDCWD, "/proc/1/environ", O_RDONLY|O_CLOEXEC) = -1 EACCES (Permission denied)']);
+  assert.ok(decide({ observations: other }).rules.some((r) => r.id === 'c1'), 'another pid, even denied');
+});
+
+test('F-S2-3 backstop: every /proc environ form after normalisation, including task, root and cwd/.. tricks', () => {
+  for (const raw of ['/proc/thread-self/environ', '/proc/40/task/41/environ', '/proc/self/root/proc/self/environ', '/proc/self/cwd/../../proc/self/environ', '/proc/self/root/proc/1/environ']) {
+    const obs = obsWith([], [`40 21:00:00.000600 openat(AT_FDCWD, "${raw}", O_RDONLY|O_CLOEXEC) = 3`]);
+    assert.ok(decide({ observations: obs }).rules.some((r) => r.id === 'c1'), raw);
+  }
+  const relative = obsWith([], ['40 21:00:00.000590 chdir("/proc/self") = 0', '40 21:00:00.000600 openat(AT_FDCWD, "environ", O_RDONLY) = 3']);
+  assert.ok(decide({ observations: relative }).rules.some((r) => r.id === 'c1'), 'relative after chdir /proc/self');
+  const benign = obsWith([], ['40 21:00:00.000600 openat(AT_FDCWD, "/work/node_modules/pkg/environment.js", O_RDONLY) = 3']);
+  assert.equal(decide({ observations: benign }).rules.some((r) => r.id === 'c1'), false);
+});
+
+test('F-S2-3 audit: process.report.getReport()/writeReport() is recorded as an env dump and gives (c1)', () => {
+  const recs = pkgRun('void process.report.getReport();');
+  const dump = recs.filter((r) => r.type === 'env-dump');
+  assert.equal(dump.length, 1);
+  assert.equal(dump[0].actor, 'package');
+  const v = decide({ observations: obsWith([{ type: 'env-dump', pid: 40, via: 'process.report.getReport', actor: 'package' }]) });
+  assert.ok(v.rules.some((r) => r.id === 'c1'));
+});
+
+test('F-S2-3 audit: a node spawned with diagnostic-report options (argv or NODE_OPTIONS) gives (c1)', () => {
+  const viaArgv = obsWith([], [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '60 21:00:00.000500 execve("/usr/local/bin/node", ["node", "--report-uncaught-exception", "--report-directory=/tmp", "x.js"], ["NODE_OPTIONS=--require=/opt/qp/preload.cjs"]) = 0',
+  ]);
+  assert.ok(decide({ observations: viaArgv }).rules.some((r) => r.id === 'c1'));
+  const viaOpts = obsWith([], [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '60 21:00:00.000500 execve("/usr/local/bin/node", ["node", "x.js"], ["NODE_OPTIONS=--require=/opt/qp/preload.cjs --report-on-signal"]) = 0',
+  ]);
+  assert.ok(decide({ observations: viaOpts }).rules.some((r) => r.id === 'c1'));
 });

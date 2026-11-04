@@ -64,27 +64,70 @@ emit({ type: 'hb', argv: process.argv.slice(0, 2), execPath: process.execPath })
 
 const realEnv = process.env;
 const reported = new Set();
-const proxy = new Proxy(realEnv, {
-  get(target, key, receiver) {
-    if (typeof key === 'string' && KEY_LIKE.test(key)) {
-      const actor = stackActor();
-      const tag = `${actor}:${key}`;
-      if (!reported.has(tag)) {
-        reported.add(tag);
-        emit({ type: 'env-read', name: key, actor });
-      }
-    }
-    return Reflect.get(target, key, receiver);
+// F-S2-3: the Proxy's TARGET holds no values (an empty object); the real env is
+// reachable only through these traps, kept in this closure. So util.inspect /
+// console.log (which format a Proxy's target directly) show {}, and every channel
+// through which code learns a key-like name's value or existence is trapped:
+// get, descriptor (also Object.hasOwn / hasOwnProperty), has ("in"), and every
+// change of one (set, define, delete). Enumeration (ownKeys) is recorded
+// separately: the sandbox image and env hold no key-like names (C7 checks it), so
+// listing keys never touches one; a key-like name is only reached by asking for it.
+function reportKey(key, via) {
+  if (typeof key !== 'string' || !KEY_LIKE.test(key)) return;
+  const actor = stackActor();
+  const tag = `${actor}:${key}`;
+  if (reported.has(tag)) return;
+  reported.add(tag);
+  emit({ type: 'env-read', name: key, actor, via });
+}
+const proxy = new Proxy({}, {
+  get(_t, key) {
+    reportKey(key, 'get');
+    return Reflect.get(realEnv, key);
   },
-  ownKeys(target) {
+  getOwnPropertyDescriptor(_t, key) {
+    reportKey(key, 'descriptor');
+    return Reflect.getOwnPropertyDescriptor(realEnv, key);
+  },
+  has(_t, key) {
+    reportKey(key, 'has');
+    return Reflect.has(realEnv, key);
+  },
+  set(_t, key, value) {
+    reportKey(key, 'set');
+    return Reflect.set(realEnv, key, value);
+  },
+  defineProperty(_t, key, desc) {
+    reportKey(key, 'define');
+    return Reflect.defineProperty(realEnv, key, desc);
+  },
+  deleteProperty(_t, key) {
+    reportKey(key, 'delete');
+    return Reflect.deleteProperty(realEnv, key);
+  },
+  ownKeys() {
     const actor = stackActor();
     if (actor === 'package' && !reported.has('enum')) {
       reported.add('enum');
       emit({ type: 'env-enumerate', actor });
     }
-    return Reflect.ownKeys(target);
+    return Reflect.ownKeys(realEnv);
   },
 });
+// F-S2-3 audit: process.report.getReport()/writeReport() read the whole env natively
+// (environmentVariables), bypassing the Proxy. Each call is recorded as an env dump,
+// which the orchestrator treats as a read of the whole env (c1), before it runs.
+if (role !== 'npm' && process.report) {
+  for (const fn of ['getReport', 'writeReport']) {
+    const orig = process.report[fn];
+    if (typeof orig !== 'function') continue;
+    const wrapped = function (...args) {
+      emit({ type: 'env-dump', via: `process.report.${fn}`, actor: stackActor() });
+      return orig.apply(this, args);
+    };
+    try { Object.defineProperty(process.report, fn, { value: wrapped, writable: false, configurable: false }); } catch (_) { /* keep going */ }
+  }
+}
 // The npm CLI does not run correctly with a wrapped process.env, so npm
 // processes are not wrapped. For the orchestrator's own npm this loses
 // nothing (npm's env reads never count). For an npm started by package code,
