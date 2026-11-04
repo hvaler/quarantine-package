@@ -7,6 +7,14 @@ This sets up the whole backend on one Vultr Cloud Compute VM:
 
 Every step can be pasted as-is and ends with a check. Run them as root on the VM unless a step says otherwise.
 
+**Placeholders.** Replace these three before you paste. The values come with your deployment instructions (OPERATOR-3).
+
+| Placeholder | Meaning |
+|---|---|
+| `<repo-url>` | the public GitHub URL of this repository |
+| `<PINNED_SHA>` | the exact commit to deploy (40 hex characters) |
+| `<your-dns-name>` | the DNS name of the VM, e.g. `qp.example.com` |
+
 **The model key is never typed on a command line.** You paste it into one file with an editor (step 6).
 
 ## 0. The VM

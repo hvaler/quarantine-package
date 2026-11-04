@@ -1,6 +1,6 @@
 {
   "schema": "qp-licenses/1",
-  "image": "qp-sandbox:s1-80b7ad33",
+  "image": "qp-sandbox:s1-321c15dd",
   "repo": {
     "license": "MIT",
     "licenseFileIsMit": true,
