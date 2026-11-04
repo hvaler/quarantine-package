@@ -166,6 +166,17 @@ Every receipt lists these in `knownLimitations`.
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
+## How this was built
+
+This project was developed with Claude Code, by a band of coding agents in separate roles: an implementer, an
+adversary, an auditor and an analyst. A human operator dispatched each stage, deployed it and handled the
+secrets. The agents wrote the code, the tests and these documents. Each stage was accepted only after an
+independent auditor reproduced its criteria on a clean clone.
+
+The product's own agent, the model step that predicts behaviour and writes the harness, makes all of its LLM
+calls through Vultr Serverless Inference, and through nothing else. The CLI and the web app call no other model
+provider.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
