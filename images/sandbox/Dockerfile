@@ -1,8 +1,13 @@
 # Sandbox and download image. Node 22 (>= 22.12) pinned by digest.
+# X10 (S2): perl and awk are removed. Their in-process env reads are invisible (L-1),
+# and nothing in the runtime needs them (npm, node, dash and strace do not).
 FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 RUN apt-get update \
  && apt-get install -y --no-install-recommends strace \
  && rm -rf /var/lib/apt/lists/* \
+ && dpkg --purge --force-remove-essential --force-depends perl-base mawk \
+ && rm -f /usr/bin/awk /etc/alternatives/awk /usr/bin/perl /usr/bin/perl5* \
+ && if command -v perl || command -v awk; then exit 1; fi \
  && groupadd -g 10001 qp && useradd -u 10001 -g 10001 -d /home/qp -s /bin/sh -M qp \
  && mkdir -p /work /in /out /home/qp /opt/qp \
  && chown 10001:10001 /work /in /out /home/qp
