@@ -10,6 +10,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const PRELOAD = path.join(__dirname, '..', 'images', 'sandbox', 'runtime', 'preload.cjs');
+// H-1 is enforced by the preload on Linux only (it reads /proc/<ppid>/cmdline).
+const HOST_VERIFIES_ROLE = process.platform === 'linux';
 const NONCE = 'n0nce';
 
 function run(script, envOverride) {
@@ -77,7 +79,11 @@ test('F-S2-1: the product harness.cjs own fixed reads stay harness', () => {
     const m = new Module('/opt/qp/harness.cjs', null);
     m._compile("module.exports = process.env.QP_TASK_NONCE_KEY;", '/opt/qp/harness.cjs');
   `.replace('QP_TASK_NONCE_KEY', 'AWS_SECRET_ACCESS_KEY'));
-  assert.deepEqual(recs.filter((r) => r.type === 'env-read').map((r) => [r.name, r.actor]), [['AWS_SECRET_ACCESS_KEY', 'harness']]);
+  // On Linux the preload also verifies the role (H-1): this test process is not the
+  // real harness started by /bin/sh /opt/qp/stage.sh, so its claimed role is demoted
+  // to package and every read is the package (fail closed). Elsewhere the claim stands.
+  const expected = HOST_VERIFIES_ROLE ? 'package' : 'harness';
+  assert.deepEqual(recs.filter((r) => r.type === 'env-read').map((r) => [r.name, r.actor]), [['AWS_SECRET_ACCESS_KEY', expected]]);
 });
 
 // ---- observe side (pure)
@@ -295,5 +301,5 @@ test('S2k: a read whose stack shows /opt/qp/harness.cjs is harness before the la
     m._compile("void process.env.API_KEY; globalThis[Symbol.for('qp.packagePhase')](); void process.env.NPM_TOKEN;", '/opt/qp/harness.cjs');
   `;
   const recs = run(launcher, { PATH: process.env.PATH, QP_TASK_NONCE: NONCE, QP_ROLE: 'harness' });
-  assert.deepEqual(envReads(recs), ['API_KEY:harness', 'NPM_TOKEN:package']);
+  assert.deepEqual(envReads(recs), HOST_VERIFIES_ROLE ? ['API_KEY:package', 'NPM_TOKEN:package'] : ['API_KEY:harness', 'NPM_TOKEN:package']);
 });

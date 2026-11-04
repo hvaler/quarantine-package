@@ -78,6 +78,7 @@ sudo -u qp npm test
 **Check:**
 - the build ends with `built qp-sandbox:s1-<sha8>` and `built qp-sinkhole:s1-<sha8>`;
 - `npm test` reports `fail 0`.
+- **At commit `1aba83a3` only:** on a Linux host, `npm test` reports `fail 2`, exactly the tests "F-S2-1: the product harness.cjs own fixed reads stay harness" and "S2k: a read whose stack shows /opt/qp/harness.cjs…". Those two tests assumed a non-Linux host, where the preload's role check (H-1, Linux-only) is off. This is test-only, not a product defect. The following commit makes them platform-aware, and from then on the result is `fail 0`.
 
 ## 6. The model key (root-only file)
 
