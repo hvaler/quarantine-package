@@ -6,7 +6,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { docker, attach, inspect } = require('./docker');
+const { docker, attach, inspect, closeGate } = require('./docker');
 const { objName, labels } = require('./config');
 const { parseRegistrySpec, resolveFixture } = require('./spec');
 const observe = require('./observe');
@@ -14,6 +14,7 @@ const { decide } = require('./verdict');
 const lifecycle = require('./lifecycle');
 const probe = require('./probe');
 const { redact, scanText } = require('./secrets');
+const { createInterrupt } = require('./interrupt');
 
 const KNOWN_LIMITATIONS = Object.freeze([
   'ICMP is out of scope: the sandbox has no capability to open raw sockets, and unprivileged ICMP is not logged.',
@@ -124,7 +125,27 @@ async function analyse(cfg, target, opts = {}) {
 
   let watchdog = null;
   const handles = [];
-  const onSignal = () => { /* teardown runs in finally; keep process alive until done */ };
+  // AF-7: the first SIGINT/SIGTERM tears this task down at once and exits
+  // (130) within the deadline; later signals never skip that teardown.
+  let finishing = null;
+  const interrupt = createInterrupt({
+    exit: opts.exit || ((code) => process.exit(code)),
+    log: opts.log || ((m) => process.stderr.write(`qp: ${m}
+`)),
+    teardown: async (st) => {
+      closeGate();
+      // Snapshot: the task flow may still be running and must not change what is written.
+      const snap = JSON.parse(JSON.stringify(receipt));
+      snap.interrupt = { signal: st.signal, signalledAt: new Date(st.signalledAt).toISOString(), repeatedSignals: 0, teardownSeconds: null };
+      const r = await finish(abort(snap, 'interrupted', `${st.signal} received; the task was stopped and its objects removed`, 130), { interrupted: st });
+      (opts.log || ((m) => process.stderr.write(`qp: ${m}
+`)))(r.receipt.interrupt ? `interrupted; teardown took ${r.receipt.interrupt.teardownSeconds} s; receipt ${r.receiptPath}` : `interrupted during the normal teardown; receipt ${r.receiptPath}`);
+      return r;
+    },
+  });
+  const onSignal = interrupt.handler;
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
   try {
     // ---- input
     let src;
@@ -139,8 +160,6 @@ async function analyse(cfg, target, opts = {}) {
     }
     receipt.package = { requested: src.label, source: src.kind, name: src.name, version: src.version || null };
 
-    process.on('SIGINT', onSignal);
-    process.on('SIGTERM', onSignal);
     // Stale = older than the longest possible task (download + sandbox + probe and teardown slack).
     await lifecycle.reapOrphans(cfg.prefix, { staleMs: (cfg.limits.downloadSeconds + cfg.limits.sandboxSeconds + 300) * 1000 });
     watchdog = lifecycle.startWatchdog(process.pid, cfg.prefix, taskId);
@@ -347,16 +366,40 @@ async function analyse(cfg, target, opts = {}) {
     receipt.abortDetail = String(err && err.message || err).slice(0, 400);
     return await finish({ receipt, exitCode: 4 });
   } finally {
-    process.removeListener('SIGINT', onSignal);
-    process.removeListener('SIGTERM', onSignal);
+    // While an interrupt teardown runs the handlers stay, so a second Ctrl+C cannot fall through to the default exit.
+    if (interrupt.state.signalledAt === null) {
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+    }
   }
 
-  async function finish(result) {
+  // Idempotent: the first caller (task flow or interrupt) runs the teardown; later callers share it.
+  function finish(result, how = {}) {
+    if (!finishing) finishing = doFinish(result, how);
+    return finishing;
+  }
+
+  async function doFinish(result, { interrupted = null } = {}) {
     for (const h of handles) if (!h.exited) { try { h.child.kill(); } catch (_) { /* gone */ } }
-    const removed = await lifecycle.removeTask(cfg.prefix, taskId);
+    let removed = await lifecycle.removeTask(cfg.prefix, taskId);
+    if (interrupted) {
+      // An object whose create was in flight at the signal can appear just after the first sweep.
+      await sleep(1000);
+      const again = await lifecycle.removeTask(cfg.prefix, taskId);
+      removed = {
+        containers: [...new Set([...removed.containers, ...again.containers])],
+        networks: [...new Set([...removed.networks, ...again.networks])],
+        volumes: [...new Set([...removed.volumes, ...again.volumes])],
+      };
+    }
     const left = await lifecycle.listObjects(cfg.prefix, { taskId, nameSweep: true });
     result.receipt.teardown = { removed, leftoversForTask: left.map((o) => `${o.type}:${o.name}`), hostTempDirs: [] };
-    if (watchdog) { try { process.kill(watchdog.pid); } catch (_) { /* already gone */ } }
+    // After an interrupt the watchdog stays: it sweeps the task once more when this process has exited.
+    if (watchdog && !interrupted) { try { process.kill(watchdog.pid); } catch (_) { /* already gone */ } }
+    if (interrupted) {
+      result.receipt.interrupt.teardownSeconds = (Date.now() - interrupted.signalledAt) / 1000;
+      result.receipt.interrupt.repeatedSignals = interrupted.repeated;
+    }
     result.receipt.finishedAt = clock.now().toISOString();
     // C7: the receipt itself is pattern-scanned before it is written.
     let body = JSON.stringify(result.receipt, null, 2);

@@ -5,9 +5,36 @@ const { spawn } = require('node:child_process');
 
 const MAX_CAPTURE = 8 * 1024 * 1024;
 
+// AF-7: once a task is interrupted, nothing new may be created or started (the
+// teardown is already listing and removing), and in-flight docker clients are
+// killed so their awaits settle at once. Removal and listing stay allowed.
+const gate = { closed: false, inflight: new Set() };
+function createsObjects(args) {
+  const a = args.map(String);
+  if (a[0] === 'create' || a[0] === 'run' || a[0] === 'start') return true;
+  if ((a[0] === 'volume' || a[0] === 'network' || a[0] === 'container') && (a[1] === 'create' || a[1] === 'run' || a[1] === 'start')) return true;
+  return false;
+}
+function closeGate() {
+  gate.closed = true;
+  for (const c of gate.inflight) { try { c.kill(); } catch (_) { /* gone */ } }
+}
+function track(child) {
+  gate.inflight.add(child);
+  child.on('close', () => gate.inflight.delete(child));
+  child.on('error', () => gate.inflight.delete(child));
+}
+function refused(args) {
+  const e = new Error(`docker ${args[0]} refused: task interrupted`);
+  e.interrupted = true;
+  return e;
+}
+
 function docker(args, { timeoutMs = 120000, allowFail = true } = {}) {
+  if (gate.closed && createsObjects(args)) return Promise.reject(refused(args));
   return new Promise((resolve, reject) => {
     const child = spawn('docker', args, { windowsHide: true });
+    if (createsObjects(args)) track(child);
     let out = '';
     let err = '';
     const timer = setTimeout(() => { child.kill(); }, timeoutMs);
@@ -28,7 +55,13 @@ function docker(args, { timeoutMs = 120000, allowFail = true } = {}) {
 
 // Attached long-running docker process; returns handle with collected streams.
 function attach(args, { maxBytes = MAX_CAPTURE } = {}) {
+  if (gate.closed && createsObjects(args)) {
+    const h = { child: { kill() {} }, stdout: '', stderr: String(refused(args).message), truncated: false, exited: true, code: null, interrupted: true };
+    h.done = Promise.resolve(h);
+    return h;
+  }
   const child = spawn('docker', args, { windowsHide: true });
+  track(child);
   const h = { child, stdout: '', stderr: '', truncated: false, exited: false, code: null };
   child.stdout.on('data', (d) => {
     if (h.stdout.length < maxBytes) h.stdout += d; else h.truncated = true;
@@ -49,4 +82,4 @@ async function inspect(name) {
   try { return JSON.parse(r.stdout)[0]; } catch (_) { return null; }
 }
 
-module.exports = { docker, attach, inspect };
+module.exports = { docker, attach, inspect, closeGate, createsObjects, _gate: gate };
