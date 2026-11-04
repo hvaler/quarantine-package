@@ -66,6 +66,7 @@ The worst case for each is `review`.
 | L-9 | A `chdir` with an unknown outcome (killed mid-call, or still unfinished when the trace ends) is treated as applied, so the affected working directories become unresolved (fail closed). |
 | L-10 | When a non-thread process is cloned with `CLONE_FS`, both it and its parent get an unresolved working directory (fail closed). Only native code makes such clones. |
 | L-11 | `io_uring` is not traced. Node in the sandbox never uses it, and the default Docker seccomp profile denies it to native code. |
+| L-13 | A native addon (`.node`) loaded by the package can read env variables without leaving a record. Only the "tried to read a key" signal is lost: the sandbox holds no secrets, and sending data out is still caught. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 

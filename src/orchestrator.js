@@ -39,6 +39,7 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'L-9: a chdir whose outcome is unknown (killed mid-call, "= ?", or never resumed before the trace ends) is treated as applied: the cwd of the thread group and of overlapping or later children become unresolved (fail closed).',
   'L-10: a process cloned with CLONE_FS but not CLONE_THREAD shares its working directory with its parent; both sides get an unresolved cwd for the whole trace (fail closed). Only native code issues such a clone; node, dash and perl do not.',
   'L-11: io_uring is not traced. Node 22 / libuv in the sandbox never issues io_uring_setup (checked with UV_USE_IO_URING=1), and native io_uring is denied by the default Docker seccomp profile the sandbox runs under; native code from a writable mount gives review anyway (L-2).',
+  'L-13: a native addon (.node) that the package loads can read env in-process with getenv(); there is no exec and no preload record, so only the intent signal (c1) is lost. Same class as L-1: the sandbox env holds no secret value (C7) and any exfiltration still fires (d)/(f).',
   'Sinkhole memory bound: when more than 128 MB is buffered across open connections, the connection holding the most is recorded early with what it sent so far; later bytes on it are not counted.',
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);

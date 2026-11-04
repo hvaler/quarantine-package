@@ -12,7 +12,17 @@ const fs = require('node:fs');
 
 const writeSync = fs.writeSync;
 const nonce = process.env.QP_TASK_NONCE || 'none';
-const role = process.env.QP_ROLE || 'package';
+// H-1 (defence in depth; the orchestrator already takes roles from the kernel trace):
+// a claimed QP_ROLE is honoured only for the real product entry point started by the
+// stage script; anything else is the package. Enforced in the Linux sandbox.
+const claimedRole = process.env.QP_ROLE || 'package';
+let parentCmd = null;
+if (process.platform === 'linux') {
+  try { parentCmd = fs.readFileSync(`/proc/${process.ppid}/cmdline`, 'utf8'); } catch (_) { parentCmd = null; }
+}
+const role = process.platform === 'linux'
+  ? require('./role.cjs').verifyRole(claimedRole, { argv: process.argv, parentCmd })
+  : claimedRole;
 delete process.env.QP_ROLE; // descendants never inherit a role: they are package code
 const PKG_ROOTS = ['/work/node_modules/'];
 const HARNESS_FILE = '/opt/qp/harness.cjs';
