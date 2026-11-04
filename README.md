@@ -38,6 +38,26 @@ The full interface (CLI, exit codes, receipt schema, actors, trusted channels, l
 | Download | 120 s, 50 MB unpacked, 300 packages, registry dependencies only |
 | Sandbox | 60 s wall clock, 64 pids, 256 MB memory (no swap), 0.5 CPU, tmpfs 128 MB `/work`, 64 MB `/tmp`, 16 MB HOME |
 
+## Stopping a run
+
+Ctrl+C (or `SIGTERM`) stops `analyse` at once. It removes every container, network and volume of the task
+within 10 s, writes a receipt with `abortReason: interrupted` and exits with 130. A second Ctrl+C does not
+skip the teardown. If the CLI is killed outright, the per-task watchdog removes the objects.
+
+## Known limitations
+
+Every receipt lists these in `knownLimitations`. None of them can turn a forbidden action into `install`.
+The worst case for each is `review`.
+
+| Id | Limitation |
+|---|---|
+| L-1 | Env reads inside shells and system interpreters (`$NPM_TOKEN` expanded by a lifecycle `sh`, `perl`, `awk`) are invisible to both the kernel trace and the preload. Their file, network and process activity is still traced and judged (DEC-11r5). |
+| L-2 | A lifecycle that runs a script directly from `/work`, `/tmp` or HOME (`./install.sh`) gets `review`. The trace cannot tell a script from an ELF binary there, so it fails closed (DEC-11r4). |
+| L-3 | A non-registry dependency deep in the tree is rejected before it is fetched. Registry metadata of the dependencies visited before it has already been fetched by then. |
+| L-4 | Not inspected: ICMP and TLS bodies (only the SNI is recorded). The tracer is visible to the package. `execveat` is covered by unit tests only. Image builds are not byte-reproducible, because distribution packages are installed at build time. |
+
+Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
+
 ## License
 
 MIT, see [LICENSE](LICENSE). The CLI has no runtime npm dependencies; the images use the official `node` and

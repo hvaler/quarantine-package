@@ -193,3 +193,11 @@ test('AF-7: Ctrl+C mid-task removes the task objects, writes an interrupted rece
     fs.rmSync(receiptsDir, { recursive: true, force: true });
   }
 });
+
+test('Dispatch 2: receipt knownLimitations carry L-1..L-4 (README "Known limitations")', () => {
+  const { KNOWN_LIMITATIONS } = require('../src/orchestrator');
+  for (const id of ['L-1', 'L-2', 'L-3', 'L-4']) assert.ok(KNOWN_LIMITATIONS.some((l) => l.startsWith(`${id}: `)), id);
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.match(readme, /## Known limitations/);
+  for (const id of ['L-1', 'L-2', 'L-3', 'L-4']) assert.match(readme, new RegExp(`\| ${id} \|`));
+});
