@@ -700,3 +700,44 @@ test('S2 CLONE_FS: order-independent; a CLONE_FS child chdir printed before the 
   assert.equal(paths.some((p) => p.startsWith('/work/')), false, `${paths}`);
   assert.equal(paths.includes('/etc/cron.d/c'), false, 'child cwd unresolved even for its own early chdir');
 });
+
+// ---- S2-T1: copied from the auditor's checks/auditor/tools/zz-auditor-d3.test.js (dispatch 3, AF-8 structural rule)
+const D3_NONCE = 'n0nce';
+const D3_ENV_OK = '["PATH=/usr/bin", "NODE_OPTIONS=--require=/opt/qp/preload.cjs", "QP_TASK_NONCE=x"]';
+const D3_TH = 'clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, exit_signal=0}, 88)';
+
+function d3Writes(lines) {
+  const ob = build({
+    traceText: lines.join('\n'),
+    sinkholeText: '{"type": "ready", "t": "2026-11-03T21:00:00.000000Z"}\n',
+    stdoutText: [40, 60].map((p) => `QPEV ${D3_NONCE} {"type":"hb","pid":${p}}`).join('\n'),
+    nonce: D3_NONCE, sandboxEndedNormally: true, sinkholeIp: '172.19.0.2',
+  });
+  return ob.observations.filter((o) => o.kind === 'fs-write').map((o) => o.path);
+}
+
+const d3Head = [
+  '1 21:00:00.000001 clone(child_stack=NULL, flags=SIGCHLD) = 10',
+  '10 21:00:00.000100 execve("/opt/qp/stage.sh", ["/opt/qp/stage.sh", "pkg"], 0x0) = 0',
+  '10 21:00:00.000200 clone(child_stack=NULL, flags=SIGCHLD) = 40',
+  `40 21:00:00.000300 execve("/usr/local/bin/node", ["node", "/opt/qp/harness.cjs", "pkg"], ${D3_ENV_OK}) = 0`,
+  '40 21:00:00.000301 openat(AT_FDCWD, "/opt/qp/preload.cjs", O_RDONLY|O_CLOEXEC) = 3</opt/qp/preload.cjs>',
+  `40 21:00:00.000320 ${D3_TH} = 52`,
+  '52 21:00:00.000330 chdir("/work") = 0', // the forking thread's own chdir (inherited normally)
+];
+const d3Child = [
+  `60 21:00:00.000380 execve("/usr/local/bin/node", ["node", "child.js"], ${D3_ENV_OK}) = 0`,
+  '60 21:00:00.000381 openat(AT_FDCWD, "/opt/qp/preload.cjs", O_RDONLY|O_CLOEXEC) = 3</opt/qp/preload.cjs>',
+  '60 21:00:00.000390 openat(AT_FDCWD, "cron.d/x", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = -1 EROFS (Read-only file system)',
+];
+
+test('AUDITOR D3: a sibling chdir printed wholly after the fork return still makes the child cwd unresolved', () => {
+  const w = d3Writes([...d3Head, '52 21:00:00.000350 vfork() = 60', '40 21:00:00.000360 chdir("/etc") = 0', ...d3Child]);
+  assert.equal(w.length, 1, JSON.stringify(w));
+  assert.notEqual(w[0], '/work/cron.d/x', 'fail-open: child placed in the old cwd');
+});
+
+test('AUDITOR D3 control: with no sibling chdir at all, the child inherits /work normally', () => {
+  const w = d3Writes([...d3Head, '52 21:00:00.000350 vfork() = 60', ...d3Child]);
+  assert.deepEqual(w, ['/work/cron.d/x']);
+});

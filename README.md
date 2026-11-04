@@ -64,6 +64,8 @@ The worst case for each is `review`.
 | L-8 | When a thread not yet attributed to any process changes directory during an unrelated fork, the child's relative paths are unresolved. This can over-condemn but never gives `install`. |
 | L-8b | In a multi-threaded package, if a thread other than the forking one ever changes directory (for example `process.chdir` in the main thread while a worker spawns), the children's relative paths are unresolved. Relative writes give `do-not-install` and relative reads give `review`. This is fail-closed by design. |
 | L-9 | A `chdir` with an unknown outcome (killed mid-call, or still unfinished when the trace ends) is treated as applied, so the affected working directories become unresolved (fail closed). |
+| L-10 | When a non-thread process is cloned with `CLONE_FS`, both it and its parent get an unresolved working directory (fail closed). Only native code makes such clones. |
+| L-11 | `io_uring` is not traced. Node in the sandbox never uses it, and the default Docker seccomp profile denies it to native code. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 

@@ -1,3 +1,5 @@
 node_modules/
 receipts/
 .runs/
+__pycache__/
+*.pyc
