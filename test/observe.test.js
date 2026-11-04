@@ -435,3 +435,47 @@ test('every observation carries the DEC-18 fields and the task nonce', () => {
     assert.equal(o.nonce, NONCE);
   }
 });
+
+test('F-D2-1: a vfork child printed before its clone return still inherits the parent cwd (both orders resolve alike)', () => {
+  // sh (50) runs in /work/node_modules/pkg and vforks node (60). Only the print
+  // order of the clone return changes. The child's later relative write and
+  // relative credential read must resolve identically in both orders.
+  for (const childFirst of [true, false]) {
+    const lines = [
+      '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+      '50 21:00:00.000410 execve("/usr/bin/sh", ["sh", "-c", "node build.js"], 0x0) = 0',
+      '50 21:00:00.000415 chdir("/work/node_modules/pkg") = 0',
+    ];
+    if (childFirst) lines.push(
+      '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>',
+      '60 21:00:00.000430 execve("/usr/local/bin/node", ["node", "build.js"], 0x0) = 0',
+      '50 21:00:00.000440 <... clone resumed>) = 60');
+    else lines.push(
+      '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD) = 60',
+      '60 21:00:00.000430 execve("/usr/local/bin/node", ["node", "build.js"], 0x0) = 0');
+    lines.push(
+      '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3',
+      '60 21:00:00.000510 openat(AT_FDCWD, "../../../home/qp/.npmrc", O_RDONLY) = -1 ENOENT (No such file or directory)');
+    const ob = mini(lines);
+    const paths = ob.observations.map((o) => o.path).filter(Boolean);
+    assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `benign write resolved (childFirst=${childFirst}): ${paths}`);
+    assert.ok(ob.observations.some((o) => o.kind === 'fs-access' && o.path === '/home/qp/.npmrc'), `credential read resolved (childFirst=${childFirst})`);
+    assert.equal(paths.some((p) => p.startsWith('unresolved:')), false, `nothing unresolved (childFirst=${childFirst})`);
+  }
+});
+
+test('F-D2-1: a child that set its own cwd (fchdir to an unknown fd) before the clone return keeps it unresolved (no fail-open)', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/bin/sh", ["sh", "-c", "x"], 0x0) = 0',
+    '50 21:00:00.000415 chdir("/work/node_modules/pkg") = 0',
+    '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>',
+    '60 21:00:00.000425 fchdir(9) = 0',
+    '50 21:00:00.000440 <... clone resumed>) = 60',
+    '60 21:00:00.000500 openat(AT_FDCWD, "cron.d/x", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3',
+  ];
+  const ob = mini(lines);
+  const paths = ob.observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/node_modules/pkg/cron.d/x'), false, 'must not borrow the parent cwd after its own fchdir');
+  assert.ok(paths.some((p) => p.startsWith('unresolved:')), `stays unresolved: ${paths}`);
+});

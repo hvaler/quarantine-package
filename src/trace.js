@@ -153,6 +153,7 @@ function analyse(text, opts = {}) {
 
   const seen = new Set(); // pids (tgids) with at least one traced call
   const exeFromOwnExec = new Set(); // pids whose exe was set by their own successful execve
+  const ownCwd = new Set(); // pids that changed their cwd themselves (chdir/fchdir)
   for (const c of calls) {
     const p = tg(c.pid);
     seen.add(p);
@@ -170,8 +171,11 @@ function analyse(text, opts = {}) {
             // AF-5: with strace -f the child's own events (e.g. its execve) can be
             // printed before the parent's clone return. Inherit state only for a
             // child that has not been seen yet; never overwrite what it set itself.
+            // F-D2-1: cwd is not changed by exec, so it is inherited whenever the
+            // child has not set its own (even if its exec was printed first);
+            // exe/argv keep the seen guard (AF-5).
+            if (!ownCwd.has(child)) cwd.set(child, cwd.get(p));
             if (!seen.has(child)) {
-              cwd.set(child, cwd.get(p));
               if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
               if (argv.has(p)) argv.set(child, argv.get(p));
             }
@@ -217,13 +221,13 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'chdir': {
-        if (c.ret === 0) cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0]));
+        if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
         break;
       }
       case 'fchdir': {
         // strace -y prints the directory behind the fd: fchdir(3</work/x>)
         const d = /^\d+<([^>]*)>/.exec(c.args);
-        if (c.ret === 0) cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null);
+        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); }
         break;
       }
       case 'socket': {
