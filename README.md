@@ -44,6 +44,11 @@ Ctrl+C (or `SIGTERM`) stops `analyse` at once. It removes every container, netwo
 within 10 s, writes a receipt with `abortReason: interrupted` and exits with 130. A second Ctrl+C does not
 skip the teardown. If the CLI is killed outright, the per-task watchdog removes the objects.
 
+## Debugging a verdict
+
+Set `QP_KEEP_TRACE=1` to keep the sandbox's raw syscall trace as `<taskId>.trace` next to the receipt. The
+receipt only names the file. Lines that look like secrets are redacted, and `scan-secrets` checks these files.
+
 ## Known limitations
 
 Every receipt lists these in `knownLimitations`. None of them can turn a forbidden action into `install`.
@@ -55,6 +60,10 @@ The worst case for each is `review`.
 | L-2 | A lifecycle that runs a script directly from `/work`, `/tmp` or HOME (`./install.sh`) gets `review`. The trace cannot tell a script from an ELF binary there, so it fails closed (DEC-11r4). |
 | L-3 | A non-registry dependency deep in the tree is rejected before it is fetched. Registry metadata of the dependencies visited before it has already been fetched by then. |
 | L-4 | Not inspected: ICMP and TLS bodies (only the SNI is recorded). The tracer is visible to the package. `execveat` is covered by unit tests only. Image builds are not byte-reproducible, because distribution packages are installed at build time. |
+| L-6b | When a child's relative file operations appear in the trace before its parent's clone return, they are unresolved. Those writes give `do-not-install` and those reads give `review` (fail closed). |
+| L-8 | When a thread not yet attributed to any process changes directory during an unrelated fork, the child's relative paths are unresolved. This can over-condemn but never gives `install`. |
+| L-8b | In a multi-threaded package, if a thread other than the forking one ever changes directory (for example `process.chdir` in the main thread while a worker spawns), the children's relative paths are unresolved. Relative writes give `do-not-install` and relative reads give `review`. This is fail-closed by design. |
+| L-9 | A `chdir` with an unknown outcome (killed mid-call, or still unfinished when the trace ends) is treated as applied, so the affected working directories become unresolved (fail closed). |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 

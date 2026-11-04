@@ -50,6 +50,8 @@ function loadConfig(env = process.env) {
     },
     sandboxUid: 10001,
     fixturesDir: path.join(REPO_ROOT, 'fixtures'),
+    // Dispatch 3: QP_KEEP_TRACE=1 keeps the raw tracer output beside the receipt (off by default).
+    keepTrace: env.QP_KEEP_TRACE === '1',
     receiptsDir: env.QP_RECEIPTS_DIR ? path.resolve(env.QP_RECEIPTS_DIR) : path.join(process.cwd(), 'receipts'),
   };
 }

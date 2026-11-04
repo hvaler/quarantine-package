@@ -56,7 +56,9 @@ function scanPaths(paths) {
     for (const f of walk(root)) {
       let buf;
       try { buf = fs.readFileSync(f); } catch (_) { continue; }
-      if (buf.length > 5 * 1024 * 1024 || buf.includes(0)) continue; // binary or huge
+      // Kept traces (QP_KEEP_TRACE) can be up to 8 MB of text: always scanned.
+      const limit = f.endsWith('.trace') ? 16 * 1024 * 1024 : 5 * 1024 * 1024;
+      if (buf.length > limit || buf.includes(0)) continue; // binary or huge
       files += 1;
       hits.push(...scanText(buf.toString('utf8'), f));
     }

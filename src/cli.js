@@ -13,7 +13,7 @@ const USAGE = `usage:
   qp leftovers                                       list objects of this QP_RUN_PREFIX (exit 1 if any)
   qp scan-secrets [<path>...]                        pattern scan (default: the repo and ./receipts)
 
-env: QP_RUN_PREFIX (default qp), QP_RECEIPTS_DIR (default ./receipts),
+env: QP_RUN_PREFIX (default qp), QP_RECEIPTS_DIR (default ./receipts), QP_KEEP_TRACE=1 (raw trace beside the receipt),
      QP_SANDBOX_TIMEOUT_S, QP_DOWNLOAD_TIMEOUT_S, QP_DOWNLOAD_MAX_BYTES, QP_DOWNLOAD_MAX_PACKAGES
 exit: 0 completed (any verdict) / clean, 1 leftovers or secret hits, 2 usage or invalid input,
       3 aborted in the download phase, 4 infrastructure failure`;

@@ -32,6 +32,10 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'L-3: Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
   'L-4: execveat is handled (envp never trusted, SR-3) but is covered by unit tests only, not by a runtime fixture.',
   'L-4: image builds are not byte-reproducible: the bases are pinned by digest, but distribution packages (strace, iptables, tcpdump) are installed at build time.',
+  'L-6b: relative file operations of a child process printed before the clone return of its parent have no inherited cwd: they are unresolved, so a write gives (a) and a read gives review (fail closed).',
+  'L-8: a chdir by a thread not yet attributed to any process that overlaps an unrelated fork marks that fork raced: relative paths of the child are unresolved (over-condemnation, never install).',
+  'L-8b: a benign multi-threaded package whose non-forking thread ever changes directory (e.g. main thread process.chdir while a worker spawns) gets the relative paths of its children unresolved: relative writes give do-not-install (a), relative reads give review. Fail closed by design (dispatch 3).',
+  'L-9: a chdir whose outcome is unknown (killed mid-call, "= ?", or never resumed before the trace ends) is treated as applied: the cwd of the thread group and of overlapping or later children become unresolved (fail closed).',
   'Sinkhole memory bound: when more than 128 MB is buffered across open connections, the connection holding the most is recorded early with what it sent so far; later bytes on it are not counted.',
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);
@@ -329,6 +333,10 @@ async function analyse(cfg, target, opts = {}) {
     if (killed) limits.push({ reason: 'wall-clock', detail: `killed by the orchestrator after ${cfg.limits.sandboxSeconds}s` });
     else if (backstopFired) limits.push({ reason: 'wall-clock', detail: `killed by the in-container hard timeout (wall + 5 s) after ${sbSeconds.toFixed(1)} s` });
     if (oom) limits.push({ reason: 'memory', detail: 'OOM kill reported by Docker' });
+    // Dispatch 3: optional raw trace beside the receipt, never inside it. The trace is
+    // of the sandbox only, which holds no secret (C7); it is still pattern-scanned and
+    // any matching line redacted before it is written, and `scan-secrets` covers it.
+    if (cfg.keepTrace && tr) receipt.traceFile = keepTrace(cfg, taskId, tr.stdout, tr.truncated);
     const ob = observe.build({
       traceText: tr ? tr.stdout : '', sinkholeText: (await docker(['logs', sinkName])).stdout,
       stdoutText: sb.stdout, nonce, limits, sandboxEndedNormally: ended, sinkholeIp, traceComplete,
@@ -423,6 +431,15 @@ async function analyse(cfg, target, opts = {}) {
   }
 }
 
+function keepTrace(cfg, taskId, text, truncated) {
+  const hits = scanText(text, 'trace');
+  const body = hits.length ? redact(text).text : text;
+  fs.mkdirSync(cfg.receiptsDir, { recursive: true });
+  const file = `${taskId}.trace`;
+  fs.writeFileSync(path.join(cfg.receiptsDir, file), body);
+  return { file, bytes: Buffer.byteLength(body), truncated: !!truncated, secretScan: { pass: hits.length === 0, redactedLines: hits.length } };
+}
+
 function abort(receipt, reason, detail, exitCode) {
   receipt.status = 'aborted';
   receipt.verdict = null;
@@ -433,4 +450,4 @@ function abort(receipt, reason, detail, exitCode) {
 
 function tail(s, n) { s = String(s || ''); return s.length > n ? `…${s.slice(-n)}` : s; }
 
-module.exports = { analyse, hardeningSnapshot, KNOWN_LIMITATIONS };
+module.exports = { analyse, hardeningSnapshot, keepTrace, KNOWN_LIMITATIONS };

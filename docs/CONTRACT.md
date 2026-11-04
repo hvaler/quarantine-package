@@ -40,6 +40,7 @@ npm test                                  # unit tests (node:test)
 | `QP_DOWNLOAD_TIMEOUT_S` | download wall clock | 120 |
 | `QP_DOWNLOAD_MAX_BYTES` | unpacked download size | 52428800 |
 | `QP_DOWNLOAD_MAX_PACKAGES` | packages in the tree | 300 |
+| `QP_KEEP_TRACE` | `1` keeps the raw tracer output (sandbox only) as `<taskId>.trace` beside the receipt. The receipt holds only `traceFile: {file, bytes, truncated, secretScan}`, never the trace. Lines matching a secret pattern are redacted before writing, and `scan-secrets` scans `.trace` files up to 16 MB | off |
 
 Limit overrides are for tests; acceptance runs at the defaults. The receipt always records the applied values in `limits`.
 
@@ -102,6 +103,11 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
   - Deadline: 9 s from the signal. If the teardown has not finished by then, the CLI exits anyway and the watchdog (left running) sweeps the task once the CLI is gone.
   - A second Ctrl+C while this runs is ignored: it never skips or restarts the teardown.
 - Every `analyse` first runs the startup reaper (scope above). `cleanup` removes all objects of the prefix.
+- **Child cwd (dispatch 3, AF-8).** A forked child inherits its parent's cwd except in the following cases, where its cwd is unresolved:
+  - another thread of the forking thread group ever ran chdir/fchdir in the trace, before or after the fork, with any outcome except a clear failure. Thread groups come from every `CLONE_THREAD` clone in the whole trace, so the rule does not depend on strace print order;
+  - such a chdir overlaps the clone's print interval (L-7);
+  - the clone shares the fs with `CLONE_FS` and is not a thread.
+  Relative paths of such a child are unresolved: a write gives (a), a read fails `paths-resolved` (review). The forking thread's own chdir, and a single-threaded chdir, are inherited normally.
 - **End reason from evidence only (ruling on S1-D2).** A limit (`sandbox.limitsHit`, rule e) is recorded only when one of these happened:
   - the orchestrator's own wall-clock timer fired (`wall-clock`);
   - Docker reported an OOM kill (`memory`);
