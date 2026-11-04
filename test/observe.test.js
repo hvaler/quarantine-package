@@ -553,3 +553,50 @@ test('L-7 race: a sibling chdir that completed before the clone entry is inherit
   const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
   assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
 });
+
+const raceBase = [
+  '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+  '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
+  '50 21:00:00.000412 chdir("/work/node_modules/pkg") = 0',
+  '50 21:00:00.000414 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 51',
+];
+const childWrite = '60 21:00:00.000500 openat(AT_FDCWD, "cron.d/x", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3';
+
+test('L-7 unknown outcome: a sibling chdir killed mid-call ("= ?") overlapping the clone still makes the child cwd unresolved', () => {
+  const lines = [...raceBase,
+    '51 21:00:00.000418 chdir("/etc" <unfinished ...>',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '51 21:00:00.000430 <... chdir resumed>) = ?',
+    childWrite];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/node_modules/pkg/cron.d/x'), false, `${paths}`);
+});
+
+test('L-7 unknown outcome: a sibling chdir never resumed before the trace ends still makes an overlapping clone raced', () => {
+  const lines = [...raceBase,
+    '51 21:00:00.000418 chdir("/etc" <unfinished ...>',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    childWrite];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/node_modules/pkg/cron.d/x'), false, `${paths}`);
+});
+
+test('L-7 unknown outcome: the group\'s own cwd after a "= ?" chdir is unresolved, not the old one', () => {
+  const lines = [...raceBase,
+    '51 21:00:00.000418 chdir("/etc" <unfinished ...>',
+    '50 21:00:00.000419 getpid() = 50',
+    '51 21:00:00.000430 <... chdir resumed>) = ?',
+    '50 21:00:00.000500 openat(AT_FDCWD, "cron.d/y", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3'];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/node_modules/pkg/cron.d/y'), false, `${paths}`);
+});
+
+test('L-7 unknown outcome: a chdir that clearly failed (-1 ENOENT) is not a race', () => {
+  const lines = [...raceBase,
+    '51 21:00:00.000418 chdir("/nope" <unfinished ...>',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '51 21:00:00.000430 <... chdir resumed>) = -1 ENOENT (No such file or directory)',
+    '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3'];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+});
