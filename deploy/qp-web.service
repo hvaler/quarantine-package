@@ -1,0 +1,35 @@
+[Unit]
+Description=Quarantine Package web app
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=qp
+Group=qp
+SupplementaryGroups=docker
+WorkingDirectory=/opt/quarantine-package
+# Non-secret settings
+Environment=NODE_ENV=production
+Environment=QP_WEB_HOST=127.0.0.1
+Environment=QP_WEB_PORT=8080
+Environment=QP_WEB_TRUSTED_PROXIES=127.0.0.1
+Environment=QP_RUN_PREFIX=qp
+Environment=QP_RECEIPTS_DIR=/var/lib/quarantine-package/receipts
+Environment=QP_WEB_STATE_FILE=/var/lib/quarantine-package/web-state.json
+# The model key only: a root-owned 0600 file, never a command line
+EnvironmentFile=/etc/quarantine-package/env
+ExecStart=/usr/bin/node src/web/server.js
+Restart=on-failure
+RestartSec=3
+# Stop: SIGTERM interrupts running tasks; each CLI tears its task down within 10 s
+KillSignal=SIGTERM
+TimeoutStopSec=20
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/quarantine-package /opt/quarantine-package/state
+
+[Install]
+WantedBy=multi-user.target
