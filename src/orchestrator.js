@@ -17,19 +17,22 @@ const { redact, scanText } = require('./secrets');
 const { createInterrupt } = require('./interrupt');
 
 const KNOWN_LIMITATIONS = Object.freeze([
-  'ICMP is out of scope: the sandbox has no capability to open raw sockets, and unprivileged ICMP is not logged.',
-  'TLS bodies are not inspected: the sinkhole records the SNI from the ClientHello and refuses the handshake.',
+  'L-4: ICMP is out of scope: the sandbox has no capability to open raw sockets, and unprivileged ICMP is not logged.',
+  'L-4: TLS bodies are not inspected: the sinkhole records the SNI from the ClientHello and refuses the handshake.',
   'UDP other than DNS is logged as an attempt; its original destination comes from the kernel trace when the socket names it.',
   'DNS over TCP is logged as a TCP attempt to port 53 (query name not parsed).',
   'Env-var reads are seen by the in-process preload only; a package can bypass or forge it in its own process. Forged preload records can only add observations; trace-derived completeness markers come from the tracer stream.',
   'Inside the harness process every rule-relevant syscall is attributed to the package (the harness itself performs none).',
   'Paths written through fchdir-relative or unknown directory fds are reported as unresolved and treated as outside the allowed areas.',
   'Side channels inside the kernel (timing, /proc enumeration) are not observed.',
-  'Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
+  'L-4: Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
   'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); an npm started by package code is therefore reported as incomplete instrumentation (review).',
-  'Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) and env reads by other system interpreters in the image (perl, awk) are invisible to both the kernel trace and the preload (DEC-11r5; their file, network and process activity is still traced and judged).',
-  'DEC-11r4: a package lifecycle that executes a script directly from /work, /tmp or HOME (e.g. "./install.sh" rather than "sh ./install.sh" or "node x.js") fails the instrumentation marker and gets review (i): the trace cannot tell a script from an ELF binary there (fail closed; narrowed in S2, X8).',
-  'Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
+  'L-1: Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) and env reads by other system interpreters in the image (perl, awk) are invisible to both the kernel trace and the preload (DEC-11r5; their file, network and process activity is still traced and judged).',
+  'L-2: DEC-11r4: a package lifecycle that executes a script directly from /work, /tmp or HOME (e.g. "./install.sh" rather than "sh ./install.sh" or "node x.js") fails the instrumentation marker and gets review (i): the trace cannot tell a script from an ELF binary there (fail closed; narrowed in S2, X8).',
+  'L-3: Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
+  'L-4: execveat is handled (envp never trusted, SR-3) but is covered by unit tests only, not by a runtime fixture.',
+  'L-4: image builds are not byte-reproducible: the bases are pinned by digest, but distribution packages (strace, iptables, tcpdump) are installed at build time.',
+  'Sinkhole memory bound: when more than 128 MB is buffered across open connections, the connection holding the most is recorded early with what it sent so far; later bytes on it are not counted.',
   'UDP payloads are logged but, per DEC-2r1, UDP attempts are rated review (f), never do-not-install by payload.',
 ]);
 
@@ -222,6 +225,8 @@ async function analyse(cfg, target, opts = {}) {
       // AF-4: the sinkhole is event-driven (no thread per connection); its own
       // ceilings sit far above anything the sandbox (pids 64) can open.
       '--pids-limit', '256', '--memory', '512m', '--memory-swap', '512m', '--cpus', '0.5', '--ulimit', 'nofile=65536:65536',
+      // AF-6: connections are attributed for their whole lifetime, up to the task wall clock.
+      '-e', `QP_CONN_DEADLINE_S=${cfg.limits.sandboxSeconds + 10}`,
       '-e', `QP_SANDBOX_UID=${cfg.sandboxUid}`, cfg.images.sinkhole], { allowFail: false });
     const ready = await waitFor(async () => /"type": "ready"/.test((await docker(['logs', sinkName])).stdout), 15000, 200);
     if (!ready) return await finish(abort(receipt, 'infrastructure', 'sinkhole did not become ready', 4));
@@ -287,8 +292,12 @@ async function analyse(cfg, target, opts = {}) {
     // DEC-12r1 (b): the tracer stream ended before the sandbox did: kernel trace incomplete.
     const traceComplete = !(trEndedAt !== null && trEndedAt < sbEndedAt - 1000);
     events.child.kill();
-    // Connections still open in the sinkhole are recorded at their 2 s deadline.
-    await sleep(2500);
+    // AF-6: the sandbox has ended; the sinkhole drains and records every connection
+    // still open, with all bytes received (SIGUSR1 -> "flushed"). If the flush is not
+    // confirmed, any traced connect left without a record fails the sinkhole-log
+    // marker (AF-4(a) backstop), so a missed record can never read as "no payload".
+    await docker(['kill', '-s', 'USR1', sinkName]);
+    const flushed = await waitFor(async () => /"type": "flushed"/.test((await docker(['logs', sinkName])).stdout), 5000, 200);
     const evLines = events.stdout.split(/\r?\n/).filter(Boolean);
     const oom = evLines.some((l) => l.startsWith('oom '));
 
@@ -348,7 +357,7 @@ async function analyse(cfg, target, opts = {}) {
       limitsHit: limits,
       hardening: hardeningSnapshot(sbInfo),
       tracer: { container: trName, hardening: hardeningSnapshot(trInfo), traceBytes: tr ? tr.stdout.length : 0, truncated: tr ? tr.truncated : null },
-      sinkhole: { container: sinkName, ip: sinkholeIp, hardening: hardeningSnapshot(sinkInfo), records: ob.sinkhole.records, controlRecords: ob.sinkhole.control },
+      sinkhole: { container: sinkName, ip: sinkholeIp, hardening: hardeningSnapshot(sinkInfo), records: ob.sinkhole.records, controlRecords: ob.sinkhole.control, flushed: !!flushed },
       network: { name: net, internal: netInfo.Internal === true, subnet, enableIPv6: netInfo.EnableIPv6 === true },
       roles: ob.roles,
       allowedAreaWrites: ob.allowedAreaWrites,

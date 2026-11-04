@@ -5,6 +5,8 @@ sends an HTTP POST and checks that the POST is recorded with its payload
 while the held connections are still open. (SO_ORIGINAL_DST is Linux-only;
 off Linux the destination is recorded as unknown, which does not affect
 this check.)
+Then (AF-6) sends a payload 3 s after connecting on a connection that stays
+open, requests the flush (SIGUSR1 path) and checks the payload is recorded.
 Usage: python scripts/sinkhole-load-check.py [held=150]
 """
 import importlib.util
@@ -50,7 +52,27 @@ print(json.dumps({"held": len(held), "postRecorded": bool(posts), "payloadBytes"
                   "replyStatus": reply[:12].decode(errors="replace"), "threads": threading.active_count(), "pass": ok}), file=REAL_STDOUT)
 for c in held:
     c.close()
-time.sleep(2.5)
+time.sleep(1.0)
 records = [json.loads(line) for line in captured.getvalue().splitlines() if line.strip()]
-print(json.dumps({"recordsAfterClose": sum(1 for r in records if r.get("type") == "tcp"), "expected": held_target + 1}), file=REAL_STDOUT)
-sys.exit(0 if ok else 1)
+after = sum(1 for r in records if r.get("type") == "tcp")
+print(json.dumps({"recordsAfterClose": after, "expected": held_target + 1}), file=REAL_STDOUT)
+ok = ok and after == held_target + 1
+
+# AF-6: a payload sent well after the old 2 s cut, on a connection that is never
+# completed or closed by the peer, is recorded with its bytes once the flush runs.
+late = socket.create_connection(("127.0.0.1", sink.TCP_PORT), timeout=3)
+silent = socket.create_connection(("127.0.0.1", sink.TCP_PORT), timeout=3)
+time.sleep(3.0)
+late.sendall(b"POST /late HTTP/1.1\r\nHost: late.example.com\r\nContent-Length: 999\r\n\r\nNPM_TOKEN-shaped-")
+time.sleep(0.3)
+sink.request_flush()
+time.sleep(0.8)
+records = [json.loads(line) for line in captured.getvalue().splitlines() if line.strip()]
+lates = [r for r in records if r.get("type") == "tcp" and r.get("path") == "/late"]
+flushed = [r for r in records if r.get("type") == "flushed"]
+late_ok = bool(lates) and lates[0]["payloadBytes"] == 17 and lates[0]["method"] == "POST" and bool(flushed) and flushed[0]["closed"] == 2
+print(json.dumps({"af6LateRecorded": bool(lates), "latePayloadBytes": lates[0]["payloadBytes"] if lates else None,
+                  "flushedClosed": flushed[0]["closed"] if flushed else None, "pass": late_ok}), file=REAL_STDOUT)
+late.close()
+silent.close()
+sys.exit(0 if ok and late_ok else 1)

@@ -9,6 +9,8 @@ Docker network with no route out.
 """
 
 import json
+import os
+import signal
 import socket
 import struct
 import sys
@@ -150,7 +152,20 @@ def parse_sni(hello):
 
 
 RECV_LIMIT = 65536
-CONN_DEADLINE_S = 2.0
+# AF-6: a connection is attributed for its whole lifetime, up to the task wall
+# clock (the orchestrator passes sandbox seconds + margin), not a fixed 2 s.
+CONN_DEADLINE_S = float(os.environ.get("QP_CONN_DEADLINE_S", "70"))
+# AF-4 capacity with long-lived connections: buffered bytes are bounded; over
+# budget, the connection holding the most is recorded early (its payload is
+# already non-empty, so the record still shows it).
+BUF_BUDGET = int(os.environ.get("QP_SINK_BUF_BUDGET", str(128 * 1024 * 1024)))
+# AF-6: the orchestrator sends SIGUSR1 once the sandbox has ended; every open
+# connection is then drained and recorded with all bytes received.
+_flush = threading.Event()
+
+
+def request_flush(*_):
+    _flush.set()
 
 
 def request_complete(buf):
@@ -227,7 +242,8 @@ def tcp_server():
     """Event-driven TCP sink (AF-4): one thread, no per-connection thread or
     process, so held connections cannot exhaust it. Every accepted connection
     gets its original destination recorded at accept time and is classified
-    when its request is complete, the peer closes, or 2 s pass."""
+    when its request is complete, the peer closes, the task wall clock passes
+    (CONN_DEADLINE_S), or the orchestrator requests a flush (SIGUSR1)."""
     import selectors
     sel = selectors.DefaultSelector()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -237,58 +253,92 @@ def tcp_server():
     s.setblocking(False)
     sel.register(s, selectors.EVENT_READ, None)
     conns = {}  # fileno -> [conn, addr, dst, buf, deadline]
+    buffered = [0]
+    accept_errors = [0]
 
     def close_out(fd):
         st = conns.pop(fd, None)
         if st is None:
             return
+        buffered[0] -= len(st[3])
         try:
             sel.unregister(st[0])
         except (KeyError, ValueError):
             pass
         finish_tcp(st[0], st[1], st[2], st[3])
 
+    def accept_all():
+        while True:
+            try:
+                conn, addr = s.accept()
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError as exc:
+                # e.g. EMFILE: report once, back off; a traced connect without a
+                # record fails the sinkhole-log marker (AF-4(a) backstop).
+                accept_errors[0] += 1
+                if accept_errors[0] == 1:
+                    emit({"type": "sinkhole-error", "detail": str(exc)[:120]})
+                time.sleep(0.05)
+                return
+            try:
+                dst = original_dst(conn)
+            except OSError:
+                dst = (None, None)
+            conn.setblocking(False)
+            conns[conn.fileno()] = [conn, addr, dst, b"", time.monotonic() + CONN_DEADLINE_S]
+            sel.register(conn, selectors.EVENT_READ, conn.fileno())
+
+    def read_some(fd):
+        """Returns False when the connection is finished (peer closed or complete)."""
+        st = conns.get(fd)
+        if st is None:
+            return False
+        try:
+            chunk = st[0].recv(min(4096, RECV_LIMIT - len(st[3])))
+        except (BlockingIOError, InterruptedError):
+            return None
+        except OSError:
+            chunk = b""
+        if chunk:
+            st[3] += chunk
+            buffered[0] += len(chunk)
+        return bool(chunk) and not request_complete(st[3])
+
+    def flush_all():
+        accept_all()
+        n = 0
+        for fd in list(conns):
+            # Drain whatever the kernel still holds for this connection.
+            for _ in range(RECV_LIMIT // 4096 + 1):
+                if read_some(fd) is not True:
+                    break
+            close_out(fd)
+            n += 1
+        emit({"type": "flushed", "closed": n})
+
     while True:
+        if _flush.is_set():
+            _flush.clear()
+            flush_all()
         now = time.monotonic()
         timeout = min([c[4] for c in conns.values()], default=now + 1.0) - now
-        for key, _ in sel.select(timeout=max(0.0, min(timeout, 1.0))):
+        for key, _ in sel.select(timeout=max(0.0, min(timeout, 0.25))):
             if key.data is None:
-                while True:
-                    try:
-                        conn, addr = s.accept()
-                    except (BlockingIOError, InterruptedError):
-                        break
-                    except OSError as exc:
-                        emit({"type": "sinkhole-error", "detail": str(exc)[:120]})
-                        break
-                    try:
-                        dst = original_dst(conn)
-                    except OSError:
-                        dst = (None, None)
-                    conn.setblocking(False)
-                    conns[conn.fileno()] = [conn, addr, dst, b"", time.monotonic() + CONN_DEADLINE_S]
-                    sel.register(conn, selectors.EVENT_READ, conn.fileno())
+                accept_all()
             else:
-                fd = key.data
-                st = conns.get(fd)
-                if st is None:
-                    continue
-                try:
-                    chunk = st[0].recv(min(4096, RECV_LIMIT - len(st[3])))
-                except (BlockingIOError, InterruptedError):
-                    continue
-                except OSError:
-                    chunk = b""
-                if chunk:
-                    st[3] += chunk
-                if not chunk or request_complete(st[3]):
-                    close_out(fd)
+                if read_some(key.data) is False:
+                    close_out(key.data)
+        while buffered[0] > BUF_BUDGET and conns:
+            close_out(max(conns, key=lambda fd: len(conns[fd][3])))
         now = time.monotonic()
         for fd in [fd for fd, c in conns.items() if c[4] <= now]:
             close_out(fd)
 
 
 def main():
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, request_flush)
     for fn in (dns_server, udp_other_server, tcp_server):
         threading.Thread(target=fn, daemon=True).start()
     time.sleep(0.2)

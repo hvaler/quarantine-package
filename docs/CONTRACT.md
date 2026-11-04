@@ -19,7 +19,7 @@ npm test                                  # unit tests (node:test)
 
 | Command | Effect | Exit code |
 |---|---|---|
-| `analyse <spec>` | analyse a registry spec (`name`, `name@version`, `name@tag`, `@scope/name[@v]`) | 0 completed (any verdict), 2 invalid input, 3 aborted in the download phase, 4 infrastructure failure |
+| `analyse <spec>` | analyse a registry spec (`name`, `name@version`, `name@tag`, `@scope/name[@v]`) | 0 completed (any verdict), 2 invalid input, 3 aborted in the download phase, 4 infrastructure failure, 130 interrupted (Ctrl+C / SIGTERM) |
 | `analyse --fixture <name>` | analyse `<repo>/fixtures/<name>`; only `[a-z0-9-]` directory names inside that folder, and the package must be `"private": true` | same |
 | `--host-probe` | also run the C2 host probe during the task (result in `hostProbe`) | same |
 | `leftovers` | list every container, network and volume of this `QP_RUN_PREFIX` | 0 none, 1 some |
@@ -96,7 +96,11 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
 - CLI killed (hard kill, `taskkill /F /T` included): a watchdog started per task watches the CLI pid and removes the task's objects when it disappears.
   - It runs as a grandchild, so it is not in the CLI's process tree.
   - It polls every 500 ms, sweeps once, then sweeps again after 3 s.
-- Ctrl+C: `SIGINT` does not interrupt `analyse`. The task tears down, writes its receipt, then exits. The watchdog also covers it.
+- Ctrl+C / `SIGTERM` (AF-7): the first signal stops the task at once.
+  - No new container, network or volume is created or started after it; in-flight docker clients are killed.
+  - Every object of the task is removed (two sweeps, 1 s apart), the receipt is written with `status: aborted`, `abortReason: interrupted`, `verdict: null` and `interrupt: {signal, signalledAt, repeatedSignals, teardownSeconds}`, and the CLI exits 130. The receipt path is printed on stderr; no stdout JSON line.
+  - Deadline: 9 s from the signal. If the teardown has not finished by then, the CLI exits anyway and the watchdog (left running) sweeps the task once the CLI is gone.
+  - A second Ctrl+C while this runs is ignored: it never skips or restarts the teardown.
 - Every `analyse` first runs the startup reaper (scope above). `cleanup` removes all objects of the prefix.
 - **End reason from evidence only (ruling on S1-D2).** A limit (`sandbox.limitsHit`, rule e) is recorded only when one of these happened:
   - the orchestrator's own wall-clock timer fired (`wall-clock`);
@@ -150,7 +154,9 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
   - HTTP: method, host, path, body length and chunked flag;
   - DNS: query name and type. The answer is a per-name fake address in 198.18.0.0/15, never routed.
 - It answers HTTP with 403 and refuses TLS after the ClientHello. Nothing is forwarded, since the network is internal.
-- **Capacity (AF-4).** The TCP sink is event-driven: one thread, a selector, no thread or process per connection, and `listen(4096)`. Every accepted connection is recorded when its request is complete, when the peer closes, or after 2 s.
+- **Capacity (AF-4).** The TCP sink is event-driven: one thread, a selector, no thread or process per connection, and `listen(4096)`. Every accepted connection is recorded when its request is complete, when the peer closes, at the task wall clock (`QP_CONN_DEADLINE_S` = sandbox seconds + 10), or at the flush.
+- **Late payloads (AF-6).** A connection is attributed for its whole lifetime, not a fixed 2 s. When the sandbox ends, the orchestrator sends the sinkhole `SIGUSR1`; it drains every open connection, records it with all bytes received, and logs `{"type": "flushed"}` (receipt `sandbox.sinkhole.flushed`). If the flush is not confirmed within 5 s, a traced connect without a record still fails `sinkhole-log` (AF-4(a)), so a missed record never reads as "no payload".
+- **Memory bound.** Buffered bytes across open connections are capped at 128 MB; over budget, the connection holding the most is recorded early with what it sent.
   - Its container limits (`--pids-limit 256`, `--memory 512m`, `nofile 65536`) sit far above what the sandbox can open. The sandbox has 64 pids, and held connections cost the sinkhole no process.
   - The orchestrator waits 2.5 s after the sandbox ends before reading the log, so in-flight connections are recorded.
   - Load check without Docker: `python scripts/sinkhole-load-check.py 150` holds 150 connections and then POSTs; the POST is recorded with its payload.
