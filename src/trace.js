@@ -194,13 +194,21 @@ function analyse(text, opts = {}) {
     return !!tids && [...tids].some((t) => t !== forker);
   };
   // A non-thread clone with CLONE_FS shares cwd with its parent: a chdir by either
-  // changes both, which the per-group model cannot follow. Both stay unresolved.
+  // changes both, which the per-group model cannot follow. Pre-pass over the whole
+  // trace (order-independent): every process on either side of such a clone has an
+  // unresolved cwd for the whole trace.
   const fsShared = new Set();
+  for (const x of calls) {
+    if ((x.name === 'clone' || x.name === 'clone3') && x.ret > 0 && /CLONE_FS/.test(x.args) && !/CLONE_THREAD/.test(x.args)) {
+      fsShared.add(leader(x.pid));
+      fsShared.add(x.ret);
+    }
+  }
   for (let ci = 0; ci < calls.length; ci++) {
     const c = calls[ci];
     const p = tg(c.pid);
     seen.add(p);
-    if (!cwd.has(p)) cwd.set(p, null);
+    if (!cwd.has(p) || fsShared.has(p)) cwd.set(p, null);
     const base = { pid: p, tid: c.pid, t: c.t, syscall: c.name, ret: c.ret, errno: c.errno };
     switch (c.name) {
       case 'clone': case 'clone3': case 'fork': case 'vfork': {
@@ -224,7 +232,7 @@ function analyse(text, opts = {}) {
             // cwd during the clone: the child's cwd is unknown (fail closed).
             const raced = otherThreadChdir(c.pid) || cwdChanges.some((d) => d.pid !== c.pid && d.pid !== child && (!tgid.has(d.pid) || tg(d.pid) === p) && d.entry <= c.exit && d.exit >= c.entry);
             if (!ownCwd.has(child)) cwd.set(child, raced ? null : cwd.get(p));
-            if (/CLONE_FS/.test(c.args)) { fsShared.add(p); fsShared.add(child); cwd.set(p, null); cwd.set(child, null); }
+            if (fsShared.has(child)) cwd.set(child, null);
             if (!seen.has(child)) {
               if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
               if (argv.has(p)) argv.set(child, argv.get(p));

@@ -684,3 +684,19 @@ test('Dispatch 3: a non-thread CLONE_FS child shares cwd with its parent: both u
   const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
   assert.equal(paths.includes('/work/cron.d/x'), false, `${paths}`);
 });
+
+test('S2 CLONE_FS: order-independent; a CLONE_FS child chdir printed before the clone return still leaves both sides unresolved', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/work/node_modules/pkg/bin", ["bin"], 0x0) = 0',
+    '50 21:00:00.000411 chdir("/work") = 0',
+    '50 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_FS|SIGCHLD <unfinished ...>',
+    '60 21:00:00.000425 chdir("/etc") = 0',
+    '60 21:00:00.000426 openat(AT_FDCWD, "cron.d/c", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)',
+    '50 21:00:00.000440 <... clone resumed>) = 60',
+    '50 21:00:00.000500 openat(AT_FDCWD, "cron.d/p", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.some((p) => p.startsWith('/work/')), false, `${paths}`);
+  assert.equal(paths.includes('/etc/cron.d/c'), false, 'child cwd unresolved even for its own early chdir');
+});
