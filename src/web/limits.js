@@ -27,18 +27,24 @@ function createRateLimit({ max, windowMs, clock, globalMax = Infinity, maxKeys =
   const hits = new Map(); // key -> timestamps (Map order = least recently used first)
   let all = [];
   return {
+    size: () => hits.size,
     take(ip) {
       const now = clock.now();
       const key = rateKey(ip);
       all = all.filter((t) => now - t < windowMs);
       const list = (hits.get(key) || []).filter((t) => now - t < windowMs);
       hits.delete(key);
-      if (list.length >= max) { hits.set(key, list); return { ok: false, retryAfterS: Math.max(1, Math.ceil((windowMs - (now - list[0])) / 1000)) }; }
-      if (all.length >= globalMax) { hits.set(key, list); return { ok: false, global: true, retryAfterS: Math.max(1, Math.ceil((windowMs - (now - all[0])) / 1000)) }; }
+      // A key is only stored while it has hits in the window (never an empty list),
+      // and the bound is enforced after every insertion.
+      const keep = () => {
+        if (list.length) hits.set(key, list);
+        while (hits.size > maxKeys) hits.delete(hits.keys().next().value);
+      };
+      if (list.length >= max) { keep(); return { ok: false, retryAfterS: Math.max(1, Math.ceil((windowMs - (now - list[0])) / 1000)) }; }
+      if (all.length >= globalMax) { keep(); return { ok: false, global: true, retryAfterS: Math.max(1, Math.ceil((windowMs - (now - all[0])) / 1000)) }; }
       list.push(now);
       all.push(now);
-      hits.set(key, list);
-      while (hits.size > maxKeys) hits.delete(hits.keys().next().value);
+      keep();
       return { ok: true };
     },
   };

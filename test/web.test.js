@@ -267,3 +267,11 @@ test('C13: a global ceiling holds across many distinct clients; the key map is b
   assert.equal(fourth.ok, false);
   assert.equal(fourth.global, true);
 });
+
+test('C13: rejected clients never grow the key map (global ceiling hit by many new addresses)', () => {
+  const r = createRateLimit({ max: 5, windowMs: 1000, globalMax: 1, maxKeys: 3, clock: { now: () => 0 } });
+  assert.ok(r.take('198.51.100.1').ok);
+  for (let i = 2; i < 500; i++) assert.equal(r.take(`198.51.100.${i % 250}`).ok, false);
+  for (let i = 0; i < 500; i++) r.take(`2001:db8:${i.toString(16)}::1`);
+  assert.ok(r.size() <= 3, `map size ${r.size()}`);
+});
