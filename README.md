@@ -63,6 +63,13 @@ Everything above runs on one Vultr VM. Only Caddy is exposed, on ports 80 and 44
 `127.0.0.1:8080`. The sandbox network is `--internal`, so it has no route to the internet: the sinkhole is the
 only place a package's traffic can reach.
 
+**Trust boundaries:**
+- **Untrusted:** packages and everything they print or write, and model output. These are only observed, escaped, and judged by fixed rules.
+- **Public surface:** only Caddy is reachable from the internet. The web app accepts a validated `name@version` or a demo id, and passes it to the CLI as argv, never through a shell. It has no admin or Docker route.
+- **The backend user can drive Docker (L-14).** The service user `qp` is in the `docker` group, which is root-equivalent, so a compromise of the web process would be a host compromise.
+  - Mitigations: the small attack surface above; systemd hardening (`NoNewPrivileges`, `ProtectSystem`, `ProtectHome`, `PrivateTmp`); the app bound to `127.0.0.1` behind Caddy; and the model key kept in a root-only `EnvironmentFile`.
+  - Rootless Docker or a Docker socket proxy that allows only the needed calls is future work.
+
 Deployment steps: [`docs/DEPLOY.md`](docs/DEPLOY.md). Interface details: [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
 ## Where the containment moment is
@@ -153,6 +160,7 @@ Every receipt lists these in `knownLimitations`.
 | L-10 | When a non-thread process is cloned with `CLONE_FS`, both it and its parent get an unresolved working directory (fail closed). Only native code makes such clones. |
 | L-11 | `io_uring` is not traced. Node in the sandbox never uses it, and the default Docker seccomp profile denies it to native code. |
 | L-13 | A native addon (`.node`) loaded by the package can read env variables without leaving a record. Only the "tried to read a key" signal is lost. |
+| L-14 | The web service user is in the `docker` group, which is root-equivalent, so a compromise of the web process would be a host compromise. Mitigations: no admin or Docker route, argv-only calls (never a shell), systemd hardening, and the app bound to 127.0.0.1 behind Caddy. Rootless Docker or a socket proxy is future work. |
 | H-1 | The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
