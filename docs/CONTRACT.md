@@ -368,11 +368,13 @@ Every key is optional. Whatever is absent or invalid is listed in `model.missing
 - **The plain `require()` of the package always runs first,** whatever the harness says. The model harness runs afterwards in the same harness process and can only add exercise. A harness that skips the import, or exports `0`, cannot prevent load-time code from running.
 - Everything the harness process does is observed as package activity. The harness cannot exclude, relabel or suppress observations, and the verdict never reads harness or model output (C4).
 
-**Retry (C8).**
-1. A harness is first compile-checked on the host, without running it.
-2. It then runs once in a **check container** (`ar-<prefix>-hcheck-<taskId>`): hardened, `--network none`, the installed tree mounted read-only at `/work`, untraced, discarded, with a 20 s kill. Its outcome only decides retry or drop; it is never an observation.
-3. A compile or check error is fed back to the model **once**, so there are exactly 2 calls, and the second carries the error text.
-4. If the retried harness also fails, no model harness is staged and the sandbox runs the plain `require()` only.
+**Retry (C8, ruling option B: no package code ever runs outside a traced sandbox).**
+1. A harness is compile-checked on the host, without running it. A compile error uses the single feedback: the model is asked once more, and a harness that still fails to compile is dropped.
+2. Otherwise the harness runs in the traced sandbox (run 1). If its `model-harness` record reports a runtime error, the error text is fed back to the model **once**, capped at 400 characters and secret-scanned. In total there are exactly 2 model calls, and the second carries the error.
+3. A compiling retried harness is staged and a **second fresh, traced sandbox run** follows. Run 1's sandbox, tracer, sinkhole and network are removed first; the volume stays. The probe runs in run 1 only.
+4. There is never a third run. If the retried harness also fails, run 2 stands, and its own plain `require()` already ran first (S2-SEC d).
+5. **The verdict uses the union of the observations of every run.** Run 2 observation ids are prefixed `r2-`, and a forbidden act in run 1 is never cleared by a clean run 2. Each completeness marker is `{ok, runs: [{round, ok, detail}]}`, and `ok` is false if any run fails it.
+6. Every run's objects are task objects, covered by the teardown, Ctrl+C (AF-7) and the leftover check (C6).
 
 **Staging.** A usable harness is written by a network-less container (`ar-<prefix>-stage-<taskId>`) from stdin into the volume, as `/in/.qp/model-harness.cjs` (read-only in the sandbox). It is never placed in env or argv.
 
@@ -382,7 +384,8 @@ Every key is optional. Whatever is absent or invalid is listed in `model.missing
   - Each entry of `attempts[]` is `{purpose: prediction|harness-retry, model, status, latencyMs, httpStatus, usage: {prompt_tokens, completion_tokens, total_tokens}, detail}`.
   - `harness` is `{source: model|null, retries: 0|1, firstError, finalError}`.
 - `harness.mode`: the fixed string `require, then the model harness when one is staged (S2)`.
-- `harness.model`: either `{staged: true, ran, ok, error, fallback}` or `{staged: false, fallback: "plain require() only: no usable model harness", reason}`. Here `ok` and `error` come from the harness process, which is package-writable, so they are informational only.
+- `harness.model`: either `{staged: true, ran, ok, error, fallback}` or `{staged: false, fallback: "plain require() only: no usable model harness", reason}`. Here `ok` and `error` come from the last run's harness process, which is package-writable, so they only decide the single retry and never the verdict.
+- `runs[]` (**top level**): one entry per traced sandbox run, `{round, harness: model|model-retry|none, mode, modelHarness: {ok, error}|null, container, seconds, exitCode, endedBy, limitsHit, observations, traceFile}`. `sandbox` is run 1's full section and `sandboxRetry` is run 2's. `logs.sandboxOutputRetry` and `secretScan.sandboxRetry` cover run 2. With `QP_KEEP_TRACE=1`, run 2's trace is `<taskId>.r2.trace`.
 - `predictionVsObserved[]`: one row per dimension (`network`, `filesOutsidePackage`, `childProcesses`), `{dimension, predicted, predictedDetail, observed, observedDetail, observationIds, status: match|mismatch|unknown}`.
   - The observed side counts observations not attributed to npm: `net-dns|tcp|udp`, `fs-write` (outside `/work` and `/tmp`), and `spawn`.
   - With no prediction, the status is `unknown`.

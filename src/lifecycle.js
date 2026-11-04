@@ -16,7 +16,7 @@ const { spawnSync } = require('node:child_process');
 const { docker } = require('./docker');
 
 // Every object the product creates is ar-<prefix>-<role>-<taskId> with one of these roles.
-const ROLE_WORDS = ['download', 'sinkhole', 'sandbox', 'tracer', 'probe', 'ctlin', 'ctlout', 'net', 'ctlnet', 'vol', 'meta', 'stage', 'hcheck'];
+const ROLE_WORDS = ['download', 'sinkhole', 'sandbox', 'tracer', 'probe', 'ctlin', 'ctlout', 'net', 'ctlnet', 'vol', 'meta', 'stage'];
 const ownName = (prefix, taskId = '[a-f0-9]{10}') => new RegExp(`^ar-${prefix}-(${ROLE_WORDS.join('|')})-${taskId}$`);
 
 function alive(pid) {

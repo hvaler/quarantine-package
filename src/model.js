@@ -188,12 +188,14 @@ function compileError(code) {
 }
 
 // One model consultation for a package. `send` is the transport (fake in tests).
-// Returns the `model` section of the receipt plus the harness to stage (or null).
-// `checkHarness(code)` (optional) runs the harness in an isolated, network-less,
-// untraced check container and resolves to null or an error string.
-async function consult({ meta, send, cfg, checkHarness = null }) {
+// Returns the `model` section of the receipt, the harness to stage (or null), and
+// `retry(error)`: the single C8 feedback of a harness error, available only while
+// it has not been used (a compile error here uses it up). Option (B): no harness
+// is ever executed outside the traced sandbox; a runtime error found there is fed
+// back through `retry`, and the orchestrator runs a second traced sandbox.
+async function consult({ meta, send, cfg }) {
   const out = { status: null, missing: [], attempts: [], model: null, prediction: null, explanation: null, harness: { source: null, retries: 0, firstError: null, finalError: null } };
-  if (!cfg.enabled) { out.status = 'disabled'; out.missing = ['prediction', 'harness', 'explanation']; return { section: out, harness: null }; }
+  if (!cfg.enabled) { out.status = 'disabled'; out.missing = ['prediction', 'harness', 'explanation']; return { section: out, harness: null, retry: null }; }
   const input = buildModelInput(meta);
   const models = [cfg.model, cfg.fallbackModel].filter(Boolean);
   let reply = null;
@@ -209,31 +211,42 @@ async function consult({ meta, send, cfg, checkHarness = null }) {
   if (!reply) {
     out.missing = ['prediction', 'harness', 'explanation'];
     if (!out.status) out.status = 'failed';
-    return { section: out, harness: null };
+    return { section: out, harness: null, retry: null };
   }
   out.status = 'ok';
   out.prediction = reply.prediction;
   out.explanation = reply.explanation;
   out.missing = reply.missing.slice();
-  const harnessError = async (code) => compileError(code) || (checkHarness ? await checkHarness(code) : null);
+
+  // The single feedback: error text is capped and secret-scanned before it is sent.
+  const feedback = async (err) => {
+    out.harness.retries = 1;
+    out.harness.firstError = redact(String(err)).text.slice(0, 400);
+    const r2 = await send({ baseUrl: cfg.baseUrl, model: out.model, messages: buildMessages(input, { content: raw.content, error: out.harness.firstError }), maxTokens: cfg.maxTokens, timeoutMs: cfg.timeoutMs });
+    const p2 = r2.status === 'ok' ? parseReply(r2.content) : null;
+    out.attempts.push(attemptRecord(out.model, r2, p2, 'harness-retry'));
+    const h = p2 && p2.harness ? p2.harness : null;
+    const e2 = h ? compileError(h) : 'no harness in the retry reply';
+    if (e2) { out.harness.finalError = redact(e2).text; return null; }
+    return h;
+  };
+
   let harness = reply.harness;
   if (harness) {
-    let err = await harnessError(harness);
-    if (err) {
-      // C8: the harness error (compile or check run) is fed back once for a retry.
-      out.harness.retries = 1;
-      out.harness.firstError = redact(err).text;
-      const r2 = await send({ baseUrl: cfg.baseUrl, model: out.model, messages: buildMessages(input, { content: raw.content, error: err }), maxTokens: cfg.maxTokens, timeoutMs: cfg.timeoutMs });
-      const p2 = r2.status === 'ok' ? parseReply(r2.content) : null;
-      out.attempts.push(attemptRecord(out.model, r2, p2, 'harness-retry'));
-      harness = p2 && p2.harness ? p2.harness : null;
-      err = harness ? await harnessError(harness) : 'no harness in the retry reply';
-      if (err) { out.harness.finalError = redact(err).text; harness = null; }
-    }
+    const err = compileError(harness);
+    if (err) harness = await feedback(`compile error: ${err}`);
   }
+  const retry = harness && out.harness.retries === 0
+    ? async (runtimeError) => {
+      const h = await feedback(`runtime error in the sandbox: ${runtimeError}`);
+      out.harness.source = h ? 'model-retry' : out.harness.source;
+      if (!h && !out.missing.includes('harness')) out.missing.push('harness');
+      return h;
+    }
+    : null;
   if (!harness && !out.missing.includes('harness')) out.missing.push('harness');
   out.harness.source = harness ? 'model' : null;
-  return { section: out, harness };
+  return { section: out, harness, retry };
 }
 
 function attemptRecord(model, r, parsed, purpose = 'prediction') {

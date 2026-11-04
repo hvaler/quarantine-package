@@ -44,16 +44,34 @@ test('C8: a harness compile error is fed back exactly once; a second failure dro
   assert.ok(section.missing.includes('harness'));
 });
 
-test('C8: a harness that throws in the check run is fed back once with the error; a working retry is kept', async () => {
+test('C8 (B): a runtime error from the traced sandbox is fed back once through retry(); a compile retry uses the single feedback up', async () => {
   const f = fake([ok(GOOD), ok(JSON.stringify({ ...JSON.parse(GOOD), harness: "module.exports = async () => require('pkg');" }))]);
-  let checks = 0;
-  const checkHarness = async () => (++checks === 1 ? 'harness threw: TypeError: p is not a function' : null);
-  const { section, harness } = await model.consult({ meta: META, send: f.send, cfg, checkHarness });
+  const c = await model.consult({ meta: META, send: f.send, cfg });
+  assert.equal(typeof c.retry, 'function');
+  const h2 = await c.retry('TypeError: p is not a function');
   assert.equal(f.calls.length, 2);
-  assert.match(f.calls[1].messages.at(-1).content, /TypeError: p is not a function/);
-  assert.match(harness, /module\.exports = async/);
-  assert.equal(section.harness.retries, 1);
-  assert.equal(section.harness.finalError, null);
+  assert.match(f.calls[1].messages.at(-1).content, /runtime error in the sandbox: TypeError: p is not a function/);
+  assert.match(h2, /module\.exports = async/);
+  assert.equal(c.section.harness.retries, 1);
+  assert.equal(c.section.harness.source, 'model-retry');
+  // after a compile retry, no runtime retry is offered (one feedback in total)
+  const bad = JSON.stringify({ ...JSON.parse(GOOD), harness: 'nope (' });
+  const g = fake([ok(bad), ok(GOOD)]);
+  const c2 = await model.consult({ meta: META, send: g.send, cfg });
+  assert.equal(g.calls.length, 2);
+  assert.ok(c2.harness);
+  assert.equal(c2.retry, null);
+});
+
+test('C8 (B): the error text fed back is capped and secret-scanned', async () => {
+  const f = fake([ok(GOOD), ok(GOOD)]);
+  const c = await model.consult({ meta: META, send: f.send, cfg });
+  const tok = ['np', 'm_'].join('') + 'B'.repeat(36);
+  await c.retry(`Error: ${tok}
+${'x'.repeat(5000)}`);
+  const sentText = f.calls[1].messages.at(-1).content;
+  assert.equal(sentText.includes(tok), false);
+  assert.ok(sentText.length < 1200, `${sentText.length}`);
 });
 
 for (const [name, reply, status] of [

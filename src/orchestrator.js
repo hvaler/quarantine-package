@@ -28,7 +28,7 @@ const KNOWN_LIMITATIONS = Object.freeze([
   'Side channels inside the kernel (timing, /proc enumeration) are not observed.',
   'L-4: Evasion: in the shared pid namespace a package can see that it is traced (TracerPid, the strace process) and behave benignly; S1 does not hide the tracer.',
   'npm CLI processes do not get the env-read preload (npm fails with a wrapped process.env); an npm started by package code is therefore reported as incomplete instrumentation (review).',
-  'L-1: Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) and env reads by other system interpreters in the image (perl, awk) are invisible to both the kernel trace and the preload (DEC-11r5; their file, network and process activity is still traced and judged).',
+  'L-1: Shell expansion of env variables (e.g. $NPM_TOKEN inside a lifecycle sh) and env reads by sh itself (perl and awk are removed from the image since S2, X10) are invisible to both the kernel trace and the preload (DEC-11r5; their file, network and process activity is still traced and judged).',
   'L-2: DEC-11r4: a package lifecycle that executes a script directly from /work, /tmp or HOME (e.g. "./install.sh" rather than "sh ./install.sh" or "node x.js") fails the instrumentation marker and gets review (i): the trace cannot tell a script from an ELF binary there (fail closed; narrowed in S2, X8).',
   'L-3: Download phase: a non-registry spec in the root manifest aborts before any network request; one deeper in the tree is rejected before it is fetched, but registry metadata of the dependencies visited before it has been fetched. Download-container egress is not limited to the registry host in S1.',
   'L-4: execveat is handled (envp never trusted, SR-3) but is covered by unit tests only, not by a runtime fixture.',
@@ -222,16 +222,94 @@ async function analyse(cfg, target, opts = {}) {
 
     // ---- S2 model loop (C8): metadata out of the volume (no network, read-only), then the model.
     const meta = await extractMeta(cfg, vol, N('meta'), L, src.name);
-    const consulted = await model.consult({
-      meta, send: opts.modelSend || model.vultrTransport(), cfg: opts.modelCfg || model.modelConfig(),
-      checkHarness: (code) => checkHarness(cfg, vol, N('hcheck'), L, code),
-    });
+    const consulted = await model.consult({ meta, send: opts.modelSend || model.vultrTransport(), cfg: opts.modelCfg || model.modelConfig() });
     receipt.model = consulted.section;
     receipt.explanation.source = consulted.section.explanation ? `model ${consulted.section.model}` : null;
     receipt.explanation.text = consulted.section.explanation;
     if (consulted.harness) await stageHarness(cfg, vol, N('stage'), L, consulted.harness);
 
-    // ---- internal network + sinkhole
+    // ---- traced sandbox run(s). Run 1 always; run 2 only when the staged model
+    // harness failed at runtime in run 1 and the single C8 feedback produced a new
+    // harness (option B: no package code ever runs outside a traced sandbox).
+    const run1 = await sandboxRun(1, consulted.harness ? 'model' : 'none', { vol, src });
+    if (run1.abort) return await finish(run1.abort);
+    const runs = [run1];
+    if (run1.modelHarness && run1.modelHarness.ok === false && consulted.retry) {
+      const h2 = await consulted.retry(run1.modelHarness.error || 'harness failed');
+      if (h2) {
+        await endRun(run1);
+        await stageHarness(cfg, vol, N('stage'), L, h2);
+        const run2 = await sandboxRun(2, 'model-retry', { vol, src });
+        if (run2.abort) return await finish(run2.abort);
+        runs.push(run2);
+      }
+    }
+
+    // ---- decide on the UNION of every traced run (a forbidden act in any run counts;
+    // a completeness marker failing in any run fails).
+    const observations = [];
+    for (const r of runs) {
+      for (const o of r.ob.observations) observations.push(r.round === 1 ? o : { ...o, id: `r${r.round}-${o.id}`, run: r.round });
+    }
+    const decision = decide({ observations });
+    const markers = {};
+    for (const r of runs) {
+      for (const [k, v] of Object.entries(r.ob.markers)) {
+        if (!markers[k]) markers[k] = { ok: true, runs: [] };
+        markers[k].ok = markers[k].ok && v.ok;
+        markers[k].runs.push({ round: r.round, ok: v.ok, detail: v.detail });
+      }
+    }
+
+    receipt.status = 'completed';
+    receipt.verdict = decision.verdict;
+    receipt.rulesFired = decision.rules;
+    receipt.observations = observations;
+    receipt.network.sinkholeLog = runs.flatMap((r) => r.ob.sinkholeLog.map((x) => (r.round === 1 ? x : { ...x, run: r.round })));
+    receipt.completeness = markers;
+    receipt.predictionVsObserved = model.compare(receipt.model && receipt.model.prediction, observations, { packageName: src.name });
+    const last = runs[runs.length - 1];
+    receipt.harness.loaded = runs.every((r) => r.load && r.load.ok);
+    receipt.harness.detail = last.load ? { mode: last.load.mode, error: last.load.error, resolved: last.load.resolved } : null;
+    const staged = runs.some((r) => r.harnessKind !== 'none');
+    receipt.harness.model = staged
+      ? { staged: true, ran: !!last.modelHarness, ok: last.modelHarness ? last.modelHarness.ok === true : null, error: last.modelHarness && last.modelHarness.error ? redact(String(last.modelHarness.error)).text : null, fallback: last.modelHarness && last.modelHarness.ok === true ? null : 'plain require() only (the product load always runs first; the model harness failed)' }
+      : { staged: false, fallback: 'plain require() only: no usable model harness', reason: receipt.model ? receipt.model.status : null };
+    receipt.runs = runs.map((r) => ({
+      round: r.round, harness: r.harnessKind, mode: r.load ? r.load.mode : null,
+      modelHarness: r.modelHarness ? { ok: r.modelHarness.ok === true, error: r.modelHarness.error ? redact(String(r.modelHarness.error)).text : null } : null,
+      container: r.sandbox.container, seconds: r.sandbox.seconds, exitCode: r.sandbox.exitCode, endedBy: r.sandbox.endedBy, limitsHit: r.sandbox.limitsHit,
+      observations: r.ob.observations.length, traceFile: r.traceFile || null,
+    }));
+    receipt.sandbox = run1.sandbox;
+    if (runs.length > 1) receipt.sandboxRetry = runs[1].sandbox;
+    if (run1.traceFile) receipt.traceFile = run1.traceFile;
+    receipt.logs.sandboxOutput = run1.output;
+    if (runs.length > 1) receipt.logs.sandboxOutputRetry = runs[1].output;
+    const scans = runs.map((r) => r.scan);
+    receipt.secretScan = {
+      sandbox: scans[0],
+      ...(runs.length > 1 ? { sandboxRetry: scans[1] } : {}),
+    };
+    if (scans.some((x) => !x.pass)) receipt.secretScan.sandbox = { ...scans[0], pass: scans.every((x) => x.pass) };
+    return await finish({ receipt, exitCode: 0 });
+  } catch (err) {
+    receipt.status = 'aborted';
+    receipt.abortReason = 'infrastructure';
+    receipt.abortDetail = String(err && err.message || err).slice(0, 400);
+    return await finish({ receipt, exitCode: 4 });
+  } finally {
+    // While an interrupt teardown runs the handlers stay, so a second Ctrl+C cannot fall through to the default exit.
+    if (interrupt.state.signalledAt === null) {
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+    }
+  }
+
+  // One traced sandbox run. Returns { abort } (an aborted result for finish) or the
+  // run's observations and sandbox section. Object names are the task's; a second
+  // run reuses them after endRun() removed the first run's containers and network.
+  async function sandboxRun(round, harnessKind, { vol, src }) {
     const net = N('net');
     await docker(['network', 'create', '--internal', ...L, net], { allowFail: false });
     const netInfo = JSON.parse((await docker(['network', 'inspect', net], { allowFail: false })).stdout)[0];
@@ -249,13 +327,13 @@ async function analyse(cfg, target, opts = {}) {
       '-e', `QP_CONN_DEADLINE_S=${cfg.limits.sandboxSeconds + 10}`,
       '-e', `QP_SANDBOX_UID=${cfg.sandboxUid}`, cfg.images.sinkhole], { allowFail: false });
     const ready = await waitFor(async () => /"type": "ready"/.test((await docker(['logs', sinkName])).stdout), 15000, 200);
-    if (!ready) return await finish(abort(receipt, 'infrastructure', 'sinkhole did not become ready', 4));
+    if (!ready) return { abort: abort(receipt, 'infrastructure', `sinkhole did not become ready (run ${round})`, 4) };
     const sinkInfo = await inspect(sinkName);
     const sinkholeIp = sinkInfo && sinkInfo.NetworkSettings.Networks[net] && sinkInfo.NetworkSettings.Networks[net].IPAddress;
 
-    // ---- optional host probe (C2 / DEC-5r1)
+    // ---- optional host probe (C2 / DEC-5r1), first run only
     let probeRun = null;
-    if (opts.hostProbe) probeRun = await probe.start(cfg, { taskId, labels: L, subnet, sinkholeIp, nonceName: `qp-${nonce}.probe.invalid` });
+    if (opts.hostProbe && round === 1) probeRun = await probe.start(cfg, { taskId, labels: L, subnet, sinkholeIp, nonceName: `qp-${nonce}.probe.invalid` });
 
     // ---- sandbox (created, snapshotted, started) + tracer
     const sbName = N('sandbox');
@@ -270,7 +348,7 @@ async function analyse(cfg, target, opts = {}) {
       '-v', `${vol}:/in:ro`,
       '-e', 'NODE_OPTIONS=--require=/opt/qp/preload.cjs', '-e', `QP_TASK_NONCE=${nonce}`, '-e', 'HOME=/home/qp',
     ];
-    if (opts.hostProbe) sbArgs.push('-e', `QP_PROBE_NAME=qp-${nonce}.probe.invalid`);
+    if (opts.hostProbe && round === 1) sbArgs.push('-e', `QP_PROBE_NAME=qp-${nonce}.probe.invalid`);
     sbArgs.push(cfg.images.sandbox, '/opt/qp/run.sh', String(cfg.limits.sandboxSeconds), src.name);
     await docker(sbArgs, { allowFail: false });
     const sbInfo = await inspect(sbName);
@@ -291,10 +369,9 @@ async function analyse(cfg, target, opts = {}) {
       handles.push(tr);
     }
     let killed = false;
-    let ourKillAt = null;
     let trEndedAt = null;
     if (tr) tr.done.then(() => { trEndedAt = Date.now(); });
-    const sbTimer = setTimeout(() => { killed = true; ourKillAt = Date.now(); docker(['kill', sbName]); }, cfg.limits.sandboxSeconds * 1000);
+    const sbTimer = setTimeout(() => { killed = true; docker(['kill', sbName]); }, cfg.limits.sandboxSeconds * 1000);
     await sb.done;
     const sbEndedAt = Date.now();
     clearTimeout(sbTimer);
@@ -306,8 +383,8 @@ async function analyse(cfg, target, opts = {}) {
     const firstMarker = (/^QP-TRACER-(ATTACHED|MISSING)\s*$/m.exec(sb.stdout) || [])[1];
     if (!tr || firstMarker !== 'ATTACHED') {
       events.child.kill();
-      receipt.sandbox = { container: sbName, containerId: sbInfo && sbInfo.Id, exitCode: sb.code, hardening: hardeningSnapshot(sbInfo), tracer: { container: trName, hardening: hardeningSnapshot(trInfo), attached: false } };
-      return await finish(abort(receipt, 'tracer-unavailable', 'the tracer did not attach within 10 s; the package was not run', 4));
+      receipt.sandbox = { container: sbName, round, containerId: sbInfo && sbInfo.Id, exitCode: sb.code, hardening: hardeningSnapshot(sbInfo), tracer: { container: trName, hardening: hardeningSnapshot(trInfo), attached: false } };
+      return { abort: abort(receipt, 'tracer-unavailable', `the tracer did not attach within 10 s (run ${round}); the package was not run`, 4) };
     }
     // DEC-12r1 (b): the tracer stream ended before the sandbox did: kernel trace incomplete.
     const traceComplete = !(trEndedAt !== null && trEndedAt < sbEndedAt - 1000);
@@ -322,27 +399,19 @@ async function analyse(cfg, target, opts = {}) {
     const oom = evLines.some((l) => l.startsWith('oom '));
 
     // ---- end reason from evidence only (ruling on S1-D2)
-    // A limit is recorded only when: the orchestrator's own timer fired (killed),
-    // Docker reported an OOM kill, or the in-container hard timeout fired, which
-    // can only happen after wall+5 s. An external stop needs independent Docker
-    // evidence: a kill/stop on the sandbox that the orchestrator did not issue,
-    // or the sinkhole being killed, stopped or removed while the task ran. A
-    // non-zero exit alone is NOT external: package code (same uid as pid 1) can
-    // kill pid 1 itself, so such a run is still observed and decided (the
-    // ended-normally marker is false, so at least (i)).
     const backstopFired = sb.code === 137 && !killed && !oom && sbSeconds >= cfg.limits.sandboxSeconds + 4;
     const sinkholeAlive = !!(await inspect(sinkName));
     const foreignSandboxKill = evLines.some((l) => /^(kill|stop) /.test(l) && l.endsWith(` ${sbName}`)) && !killed;
     const sinkholeStopped = evLines.some((l) => /^(kill|stop|destroy) /.test(l) && l.endsWith(` ${sinkName}`));
     if (!killed && !oom && !backstopFired && (foreignSandboxKill || sinkholeStopped || !sinkholeAlive)) {
-      receipt.sandbox = { container: sbName, containerId: sbInfo && sbInfo.Id, exitCode: sb.code, seconds: sbSeconds, sinkholeAlive, dockerEvents: evLines.slice(0, 20), hardening: hardeningSnapshot(sbInfo) };
-      return await finish(abort(receipt, 'killed-externally', `the sandbox ended with exit ${sb.code} after ${sbSeconds.toFixed(1)} s; Docker reported a kill/stop/removal not issued by this task (sandbox kill: ${foreignSandboxKill}, sinkhole stopped or gone: ${sinkholeStopped || !sinkholeAlive})`, 4));
+      receipt.sandbox = { container: sbName, round, containerId: sbInfo && sbInfo.Id, exitCode: sb.code, seconds: sbSeconds, sinkholeAlive, dockerEvents: evLines.slice(0, 20), hardening: hardeningSnapshot(sbInfo) };
+      return { abort: abort(receipt, 'killed-externally', `the sandbox ended with exit ${sb.code} after ${sbSeconds.toFixed(1)} s (run ${round}); Docker reported a kill/stop/removal not issued by this task (sandbox kill: ${foreignSandboxKill}, sinkhole stopped or gone: ${sinkholeStopped || !sinkholeAlive})`, 4) };
     }
 
     // ---- probe controls and stop
     if (probeRun) receipt.hostProbe = await probe.finish(cfg, probeRun, { taskId, labels: L, net, sinkholeIp });
 
-    // ---- observe and decide
+    // ---- observe this run
     // From the container exit status only (stdout is package-writable).
     const ended = sb.code === 0 && !killed;
     const limits = [];
@@ -352,7 +421,7 @@ async function analyse(cfg, target, opts = {}) {
     // Dispatch 3: optional raw trace beside the receipt, never inside it. The trace is
     // of the sandbox only, which holds no secret (C7); it is still pattern-scanned and
     // any matching line redacted before it is written, and `scan-secrets` covers it.
-    if (cfg.keepTrace && tr) receipt.traceFile = keepTrace(cfg, taskId, tr.stdout, tr.truncated);
+    const traceFile = cfg.keepTrace && tr ? keepTrace(cfg, round === 1 ? taskId : `${taskId}.r${round}`, tr.stdout, tr.truncated) : null;
     const ob = observe.build({
       traceText: tr ? tr.stdout : '', sinkholeText: (await docker(['logs', sinkName])).stdout,
       stdoutText: sb.stdout, nonce, limits, sandboxEndedNormally: ended, sinkholeIp, traceComplete,
@@ -363,53 +432,37 @@ async function analyse(cfg, target, opts = {}) {
       ob.observations.push({ id: `o${ob.observations.length + 1}`, kind: 'limit', actor: null, nonce, reason: 'pids', detail: `${pidsObs.failedForks} fork/clone calls failed with EAGAIN at pids-limit ${cfg.limits.pids}` });
       limits.push({ reason: 'pids', detail: 'process limit exhausted' });
     }
-    const decision = decide({ observations: ob.observations });
-
-    const scanRec = observe.parsePreload(sb.stdout, nonce).recs.find((r) => r.type === 'sandbox-scan');
-    receipt.status = 'completed';
-    receipt.verdict = decision.verdict;
-    receipt.rulesFired = decision.rules;
-    receipt.observations = ob.observations;
-    receipt.network.sinkholeLog = ob.sinkholeLog;
-    receipt.completeness = ob.markers;
-    receipt.predictionVsObserved = model.compare(receipt.model && receipt.model.prediction, ob.observations, { packageName: src.name });
+    const recs = observe.parsePreload(sb.stdout, nonce).recs;
     const load = ob.observations.find((o) => o.kind === 'load');
-    receipt.harness.loaded = !!(load && load.ok);
-    receipt.harness.detail = load ? { mode: load.mode, error: load.error, resolved: load.resolved } : null;
-    // Model harness outcome (reported by the harness process; package-writable, so informational only).
-    const mh = observe.parsePreload(sb.stdout, nonce).recs.find((r) => r.type === 'model-harness' && (!load || r.pid === load.pid));
-    receipt.harness.model = receipt.model && receipt.model.harness.source === 'model'
-      ? { staged: true, ran: !!mh, ok: mh ? mh.ok === true : null, error: mh && mh.error ? redact(String(mh.error)).text : null, fallback: mh && mh.ok === true ? null : 'plain require() (always run first)' }
-      : { staged: false, fallback: 'plain require() only: no usable model harness', reason: receipt.model ? receipt.model.status : null };
-    receipt.sandbox = {
-      container: sbName, fresh: true, containerId: sbInfo && sbInfo.Id, seconds: sbSeconds, exitCode: sb.code,
-      endedBy: killed ? 'orchestrator-kill' : sb.code === 137 ? 'kill' : 'exit',
-      limitsHit: limits,
-      hardening: hardeningSnapshot(sbInfo),
-      tracer: { container: trName, hardening: hardeningSnapshot(trInfo), traceBytes: tr ? tr.stdout.length : 0, truncated: tr ? tr.truncated : null },
-      sinkhole: { container: sinkName, ip: sinkholeIp, hardening: hardeningSnapshot(sinkInfo), records: ob.sinkhole.records, controlRecords: ob.sinkhole.control, flushed: !!flushed },
-      network: { name: net, internal: netInfo.Internal === true, subnet, enableIPv6: netInfo.EnableIPv6 === true },
-      roles: ob.roles,
-      allowedAreaWrites: ob.allowedAreaWrites,
-      preloadForeignRecords: ob.preloadForeignRecords,
-    };
+    // Model harness outcome (reported by the harness process; package-writable, so it
+    // only decides whether the single retry runs, never the verdict).
+    const modelHarness = harnessKind === 'none' ? null : (recs.find((r) => r.type === 'model-harness' && (!load || r.pid === load.pid)) || null);
+    const scanRec = recs.find((r) => r.type === 'sandbox-scan');
     const shown = sb.stdout.split(/\r?\n/).filter((l) => !l.startsWith('QPEV ')).join('\n');
-    receipt.logs.sandboxOutput = redact(tail(shown, 8000)).text;
-    receipt.secretScan = {
-      sandbox: scanRec ? { keyLikeEnvNames: scanRec.keyLikeEnvNames, ignoredImageVars: scanRec.ignoredImageVars, dockerSockPresent: scanRec.dockerSockPresent, mounts: scanRec.mounts, envNamesScanned: scanRec.envNamesScanned, pass: scanRec.keyLikeEnvNames.length === 0 && scanRec.dockerSockPresent.length === 0 } : { pass: false, error: 'no in-sandbox scan record' },
+    return {
+      round, harnessKind, ob, load, modelHarness, traceFile, net, sinkName, sbName, trName,
+      output: redact(tail(shown, 8000)).text,
+      scan: scanRec ? { keyLikeEnvNames: scanRec.keyLikeEnvNames, ignoredImageVars: scanRec.ignoredImageVars, dockerSockPresent: scanRec.dockerSockPresent, mounts: scanRec.mounts, envNamesScanned: scanRec.envNamesScanned, pass: scanRec.keyLikeEnvNames.length === 0 && scanRec.dockerSockPresent.length === 0 } : { pass: false, error: 'no in-sandbox scan record' },
+      sandbox: {
+        container: sbName, round, fresh: true, containerId: sbInfo && sbInfo.Id, seconds: sbSeconds, exitCode: sb.code,
+        endedBy: killed ? 'orchestrator-kill' : sb.code === 137 ? 'kill' : 'exit',
+        limitsHit: limits,
+        hardening: hardeningSnapshot(sbInfo),
+        tracer: { container: trName, hardening: hardeningSnapshot(trInfo), traceBytes: tr ? tr.stdout.length : 0, truncated: tr ? tr.truncated : null },
+        sinkhole: { container: sinkName, ip: sinkholeIp, hardening: hardeningSnapshot(sinkInfo), records: ob.sinkhole.records, controlRecords: ob.sinkhole.control, flushed: !!flushed },
+        network: { name: net, internal: netInfo.Internal === true, subnet, enableIPv6: netInfo.EnableIPv6 === true },
+        roles: ob.roles,
+        allowedAreaWrites: ob.allowedAreaWrites,
+        preloadForeignRecords: ob.preloadForeignRecords,
+      },
     };
-    return await finish({ receipt, exitCode: 0 });
-  } catch (err) {
-    receipt.status = 'aborted';
-    receipt.abortReason = 'infrastructure';
-    receipt.abortDetail = String(err && err.message || err).slice(0, 400);
-    return await finish({ receipt, exitCode: 4 });
-  } finally {
-    // While an interrupt teardown runs the handlers stay, so a second Ctrl+C cannot fall through to the default exit.
-    if (interrupt.state.signalledAt === null) {
-      process.removeListener('SIGINT', onSignal);
-      process.removeListener('SIGTERM', onSignal);
-    }
+  }
+
+  // Removes a finished run's containers and network (the volume stays) so the next
+  // run starts fresh under the same task-scoped names.
+  async function endRun(r) {
+    await docker(['rm', '-f', '-v', r.sbName, r.trName, r.sinkName], { timeoutMs: 60000 });
+    await docker(['network', 'rm', r.net], { timeoutMs: 60000 });
   }
 
   // Idempotent: the first caller (task flow or interrupt) runs the teardown; later callers share it.
@@ -471,33 +524,13 @@ async function extractMeta(cfg, vol, name, L, pkgName) {
   try { return m ? JSON.parse(m[1]) : {}; } catch (_) { return {}; }
 }
 
-// Harness check (C8 retry): the model harness runs once against the read-only
-// installed tree in a hardened container with NO network, untraced and discarded.
-// Its outcome only decides whether the harness is retried or dropped; it is never
-// an observation and never reaches the verdict.
-const HCHECK_SCRIPT = `
-const fs=require('fs'),Module=require('module');const src=fs.readFileSync(0,'utf8');
-const m=new Module('/work/.qp-model-harness.cjs',null);m.filename=m.id;m.paths=Module._nodeModulePaths('/work');
-const done=(r)=>{process.stdout.write('QP-HCHECK '+JSON.stringify(r)+'\\n');process.exit(0)};
-(async()=>{try{m._compile(src,m.filename);if(typeof m.exports==='function'){await Promise.race([Promise.resolve().then(()=>m.exports()),new Promise((_,j)=>setTimeout(()=>j(new Error('harness did not finish within 10 s')),10000))])}done({ok:true})}catch(e){done({ok:false,error:String(e&&(e.code||e.message)||e).slice(0,300)})}})();`;
-
-async function checkHarness(cfg, vol, name, L, code) {
-  const r = await docker(['run', '--rm', '-i', '--name', name, ...L, '--network', 'none',
-    ...hardenedArgs(cfg, { tmpfs: [['/tmp', 32 * 1024 * 1024], ['/home/qp', 16 * 1024 * 1024]] }),
-    '-e', 'HOME=/home/qp', '-v', `${vol}:/work:ro`, '--entrypoint', 'timeout', cfg.images.sandbox, '-s', 'KILL', '20', 'node', '-e', HCHECK_SCRIPT],
-  { timeoutMs: 60000, input: code });
-  const m = /QP-HCHECK (\{.*\})/.exec(r.stdout || '');
-  if (!m) return `harness check produced no result (exit ${r.code})`;
-  try { const v = JSON.parse(m[1]); return v.ok ? null : `harness threw: ${v.error}`; } catch (_) { return 'harness check result unreadable'; }
-}
-
 // The model harness is written into the volume (read-only inside the sandbox) by a
 // separate network-less container; it is never placed in an env var or argv.
 async function stageHarness(cfg, vol, name, L, code) {
   await docker(['run', '--rm', '-i', '--name', name, ...L, '--network', 'none',
     ...hardenedArgs(cfg, { tmpfs: [['/tmp', 16 * 1024 * 1024]] }),
     '-v', `${vol}:/out`, '--entrypoint', 'node', cfg.images.sandbox, '-e',
-    "const fs=require('fs');const c=fs.readFileSync(0);fs.mkdirSync('/out/.qp',{recursive:true});fs.writeFileSync('/out/.qp/model-harness.cjs',c,{mode:0o444})"],
+    "const fs=require('fs');const c=fs.readFileSync(0);fs.mkdirSync('/out/.qp',{recursive:true});fs.rmSync('/out/.qp/model-harness.cjs',{force:true});fs.writeFileSync('/out/.qp/model-harness.cjs',c,{mode:0o444})"],
   { timeoutMs: 60000, allowFail: false, input: code });
 }
 

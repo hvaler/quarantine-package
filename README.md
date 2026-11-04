@@ -56,7 +56,7 @@ The worst case for each is `review`.
 
 | Id | Limitation |
 |---|---|
-| L-1 | Env reads inside shells and system interpreters (`$NPM_TOKEN` expanded by a lifecycle `sh`, `perl`, `awk`) are invisible to both the kernel trace and the preload. Their file, network and process activity is still traced and judged (DEC-11r5). |
+| L-1 | Env reads inside the shell (`$NPM_TOKEN` expanded by a lifecycle `sh`; `perl` and `awk` are removed from the image) are invisible to both the kernel trace and the preload. Their file, network and process activity is still traced and judged (DEC-11r5). |
 | L-2 | A lifecycle that runs a script directly from `/work`, `/tmp` or HOME (`./install.sh`) gets `review`. The trace cannot tell a script from an ELF binary there, so it fails closed (DEC-11r4). |
 | L-3 | A non-registry dependency deep in the tree is rejected before it is fetched. Registry metadata of the dependencies visited before it has already been fetched by then. |
 | L-4 | Not inspected: ICMP and TLS bodies (only the SNI is recorded). The tracer is visible to the package. `execveat` is covered by unit tests only. Image builds are not byte-reproducible, because distribution packages are installed at build time. |
