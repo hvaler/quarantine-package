@@ -10,6 +10,8 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p evidence
 OUT="evidence/c16-$TS.json"
 FAIL=0
+HOSTILE_OUT="$(mktemp)" || exit 1
+trap 'rm -f "$HOSTILE_OUT"' EXIT
 res() { printf '%s %s\n' "$1" "$2"; [ "$1" = PASS ] || FAIL=1; }
 
 # 1. C2 host-side probe: nothing leaves the VM during a run whose package tries the network.
@@ -17,7 +19,7 @@ P="$(node src/cli.js analyse --fixture netbenign --host-probe 2>/dev/null | tail
 echo "$P" | grep -q '"hostProbePass":true' && res PASS "C2 host probe (nothing left the VM)" || res FAIL "C2 host probe: $P"
 
 # 2. /healthz answers within 1 s, every 0.5 s, while the hostile fixture runs.
-node src/cli.js analyse --fixture hostile >/tmp/qp-hostile.json 2>/dev/null &
+node src/cli.js analyse --fixture hostile >"$HOSTILE_OUT" 2>/dev/null &
 HP=$!
 H_OK=1; N=0
 while kill -0 "$HP" 2>/dev/null; do
@@ -25,7 +27,7 @@ while kill -0 "$HP" 2>/dev/null; do
   N=$((N + 1)); sleep 0.5
 done
 wait "$HP"
-grep -q '"verdict":"do-not-install"' /tmp/qp-hostile.json && res PASS "hostile fixture: do-not-install" || res FAIL "hostile fixture verdict: $(cat /tmp/qp-hostile.json)"
+grep -q '"verdict":"do-not-install"' "$HOSTILE_OUT" && res PASS "hostile fixture: do-not-install" || res FAIL "hostile fixture verdict: $(cat "$HOSTILE_OUT")"
 [ "$H_OK" = 1 ] && [ "$N" -gt 0 ] && res PASS "C14 /healthz answered $N times during the hostile run" || res FAIL "C14 /healthz failed during the hostile run"
 
 # 3. C6 zero leftovers after the three demo cases (express, netbenign, hostile).
