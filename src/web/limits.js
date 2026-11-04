@@ -3,18 +3,42 @@
 'use strict';
 
 const fs = require('node:fs');
+const net = require('node:net');
+
+// One client can hold a whole IPv6 /64, so IPv6 is limited per /64 prefix; IPv4
+// (and IPv4-mapped IPv6) per address.
+function rateKey(ip) {
+  const s = String(ip || '');
+  if (net.isIPv4(s)) return s;
+  if (!net.isIPv6(s)) return `other:${s.slice(0, 64)}`;
+  const [head, tail = ''] = s.toLowerCase().split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  if (t.length && net.isIPv4(t[t.length - 1])) return t[t.length - 1]; // ::ffff:a.b.c.d
+  const groups = s.includes('::') ? [...h, ...Array(8 - h.length - t.length).fill('0'), ...t] : h;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
 const path = require('node:path');
 
-function createRateLimit({ max, windowMs, clock }) {
-  const hits = new Map(); // ip -> timestamps
+// Per-key limit plus a global ceiling on admissions in the same window. The key map
+// is hard-bounded: when full, the least recently used key is evicted (eviction can
+// only forget a key, while the global ceiling still holds).
+function createRateLimit({ max, windowMs, clock, globalMax = Infinity, maxKeys = 10000 }) {
+  const hits = new Map(); // key -> timestamps (Map order = least recently used first)
+  let all = [];
   return {
     take(ip) {
       const now = clock.now();
-      const list = (hits.get(ip) || []).filter((t) => now - t < windowMs);
-      if (list.length >= max) { hits.set(ip, list); return { ok: false, retryAfterS: Math.ceil((windowMs - (now - list[0])) / 1000) }; }
+      const key = rateKey(ip);
+      all = all.filter((t) => now - t < windowMs);
+      const list = (hits.get(key) || []).filter((t) => now - t < windowMs);
+      hits.delete(key);
+      if (list.length >= max) { hits.set(key, list); return { ok: false, retryAfterS: Math.max(1, Math.ceil((windowMs - (now - list[0])) / 1000)) }; }
+      if (all.length >= globalMax) { hits.set(key, list); return { ok: false, global: true, retryAfterS: Math.max(1, Math.ceil((windowMs - (now - all[0])) / 1000)) }; }
       list.push(now);
-      hits.set(ip, list);
-      if (hits.size > 10000) for (const [k, v] of hits) if (!v.some((t) => now - t < windowMs)) hits.delete(k);
+      all.push(now);
+      hits.set(key, list);
+      while (hits.size > maxKeys) hits.delete(hits.keys().next().value);
       return { ok: true };
     },
   };
@@ -43,4 +67,4 @@ function createDailyCap({ cap, file, clock }) {
   };
 }
 
-module.exports = { createRateLimit, createDailyCap };
+module.exports = { createRateLimit, createDailyCap, rateKey };

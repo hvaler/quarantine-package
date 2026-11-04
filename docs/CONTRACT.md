@@ -410,7 +410,8 @@ node src/cli.js smoke-model --out evidence/c11-smoke.json
 | `QP_WEB_HOST` | listen address | `127.0.0.1` |
 | `QP_WEB_CONCURRENCY` | tasks run at once, 1 or 2 | 1 |
 | `QP_WEB_QUEUE_MAX` | waiting tasks; beyond this, 503 "queue full" | 5 |
-| `QP_WEB_RATE_MAX` / `QP_WEB_RATE_WINDOW_S` | analyses per client IP per window | 5 per 600 s |
+| `QP_WEB_RATE_MAX` / `QP_WEB_RATE_WINDOW_S` | analyses per client per window; the client key is the IPv4 address, or the **IPv6 /64 prefix** | 5 per 600 s |
+| `QP_WEB_RATE_GLOBAL_MAX` | analyses admitted per window across all clients | 30 |
 | `QP_WEB_TRUSTED_PROXIES` | comma-separated proxy IPs whose `X-Forwarded-For` is believed | none (XFF ignored) |
 | `QP_WEB_MODEL_CAP` | daily cap on model calls (UTC day), persisted; `0` refuses every new analysis | 60 |
 | `QP_WEB_STATE_FILE` | where the daily count is persisted | `./state/web-state.json` |

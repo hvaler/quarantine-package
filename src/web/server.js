@@ -48,6 +48,7 @@ function webConfig(env = process.env) {
     queueMax: Number(env.QP_WEB_QUEUE_MAX || 5),
     rateMax: Number(env.QP_WEB_RATE_MAX || 5),
     rateWindowMs: Number(env.QP_WEB_RATE_WINDOW_S || 600) * 1000,
+    rateGlobalMax: Number(env.QP_WEB_RATE_GLOBAL_MAX || 30),
     modelCap: Number(env.QP_WEB_MODEL_CAP || 60),
     trusted: parseTrusted(env.QP_WEB_TRUSTED_PROXIES || ''),
     stateFile: path.resolve(env.QP_WEB_STATE_FILE || path.join(process.cwd(), 'state', 'web-state.json')),
@@ -77,7 +78,7 @@ function createApp(opts) {
   const receiptsDir = opts.receiptsDir;
   const runner = opts.runner;
   const readReceipt = opts.readReceipt || ((id) => JSON.parse(fs.readFileSync(path.join(receiptsDir, `${id}.json`), 'utf8')));
-  const rate = createRateLimit({ max: cfg.rateMax, windowMs: cfg.rateWindowMs, clock });
+  const rate = createRateLimit({ max: cfg.rateMax, windowMs: cfg.rateWindowMs, globalMax: cfg.rateGlobalMax || Infinity, clock });
   const cap = createDailyCap({ cap: cfg.modelCap, file: cfg.stateFile, clock });
   const jobs = new Map();
   const queue = [];
@@ -144,7 +145,7 @@ function createApp(opts) {
     if (cap.exhausted()) return { ok: false, status: 503, title: 'Daily limit reached', message: 'The daily limit of model calls is reached. New analyses resume tomorrow (UTC); existing receipts stay available.' };
     if (queue.length >= cfg.queueMax) return { ok: false, status: 503, title: 'Queue full', message: 'Too many analyses are waiting. Try again in a few minutes; existing receipts stay available.' };
     const r = rate.take(ip);
-    if (!r.ok) return { ok: false, status: 429, title: 'Too many requests', message: `Rate limit reached for your address. Try again in ${r.retryAfterS} s.`, retryAfterS: r.retryAfterS };
+    if (!r.ok) return { ok: false, status: 429, title: 'Too many requests', message: r.global ? `The service is busy. Try again in ${r.retryAfterS} s.` : `Rate limit reached for your address. Try again in ${r.retryAfterS} s.`, retryAfterS: r.retryAfterS };
     const job = { id: crypto.randomBytes(8).toString('hex'), target, label: target.label, status: 'queued', receiptId: null, message: '' };
     jobs.set(job.id, job);
     queue.push(job);

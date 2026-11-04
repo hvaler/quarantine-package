@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { clientIp, parseTrusted } = require('../src/web/clientip');
-const { createDailyCap, createRateLimit } = require('../src/web/limits');
+const { createDailyCap, createRateLimit, rateKey } = require('../src/web/limits');
 const { createApp, webConfig, validateWebSpec } = require('../src/web/server');
 const render = require('../src/web/render');
 
@@ -245,4 +245,25 @@ test('JSON API: POST /api/analyse {spec|demo} -> 202 jobId; validation errors ar
     assert.equal(JSON.parse(rc.body).verdict, 'install');
     assert.equal((await req(port, 'GET', '/api/receipts/..%2f..%2fx')).status, 404);
   });
+});
+
+test('C13: IPv6 is limited per /64 (address rotation inside a /64 does not escape); IPv4-mapped is the IPv4 address', () => {
+  assert.equal(rateKey('2001:db8:1:2::1'), rateKey('2001:db8:1:2:ffff:ffff:ffff:ffff'));
+  assert.notEqual(rateKey('2001:db8:1:2::1'), rateKey('2001:db8:1:3::1'));
+  assert.equal(rateKey('::ffff:203.0.113.9'), '203.0.113.9');
+  assert.equal(rateKey('203.0.113.9'), '203.0.113.9');
+  const r = createRateLimit({ max: 2, windowMs: 1000, clock: { now: () => 0 } });
+  assert.ok(r.take('2001:db8:1:2::1').ok);
+  assert.ok(r.take('2001:db8:1:2::2').ok);
+  assert.equal(r.take('2001:db8:1:2:abcd::9').ok, false);
+});
+
+test('C13: a global ceiling holds across many distinct clients; the key map is bounded', () => {
+  const r = createRateLimit({ max: 5, windowMs: 1000, globalMax: 3, maxKeys: 2, clock: { now: () => 0 } });
+  assert.ok(r.take('198.51.100.1').ok);
+  assert.ok(r.take('198.51.100.2').ok);
+  assert.ok(r.take('198.51.100.3').ok);
+  const fourth = r.take('198.51.100.4');
+  assert.equal(fourth.ok, false);
+  assert.equal(fourth.global, true);
 });
