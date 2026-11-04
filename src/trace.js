@@ -95,6 +95,12 @@ function parseLines(text) {
     const c = splitCall(body);
     if (c) calls.push({ pid, t, entry: seq, exit: seq, ...c });
   }
+  // A chdir/fchdir still unfinished when the trace ends may have taken effect:
+  // keep it with an open interval and an unknown result (fail closed).
+  for (const [pid, p] of pending) {
+    const c = splitCall(p.text);
+    if (c && (c.name === 'chdir' || c.name === 'fchdir')) calls.push({ pid, t: p.t, entry: p.entry, exit: Infinity, ...c, ret: null, errno: null });
+  }
   return calls;
 }
 
@@ -161,7 +167,8 @@ function analyse(text, opts = {}) {
   // only take effect between its entry and exit stops; one whose interval
   // overlaps a clone's interval (also one resumed later) may or may not be in
   // the child's cwd.
-  const cwdChanges = calls.filter((x) => (x.name === 'chdir' || x.name === 'fchdir') && x.ret === 0);
+  // Counted unless it clearly failed: "= ?" (killed mid-call) or never resumed may have applied.
+  const cwdChanges = calls.filter((x) => (x.name === 'chdir' || x.name === 'fchdir') && x.ret !== -1 && !(typeof x.ret === 'number' && x.ret < 0));
   for (let ci = 0; ci < calls.length; ci++) {
     const c = calls[ci];
     const p = tg(c.pid);
@@ -237,12 +244,14 @@ function analyse(text, opts = {}) {
       }
       case 'chdir': {
         if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
+        else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
       }
       case 'fchdir': {
         // strace -y prints the directory behind the fd: fchdir(3</work/x>)
         const d = /^\d+<([^>]*)>/.exec(c.args);
         if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); }
+        else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
       }
       case 'socket': {
