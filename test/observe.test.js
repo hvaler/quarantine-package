@@ -479,3 +479,25 @@ test('F-D2-1: a child that set its own cwd (fchdir to an unknown fd) before the 
   assert.equal(paths.includes('/work/node_modules/pkg/cron.d/x'), false, 'must not borrow the parent cwd after its own fchdir');
   assert.ok(paths.some((p) => p.startsWith('unresolved:')), `stays unresolved: ${paths}`);
 });
+
+test('F-D2-1 race: a cwd change by another parent thread while the clone is pending never becomes the child cwd (fail closed)', () => {
+  // Parent 50 is in /etc when it enters clone; its thread 51 moves the process
+  // to /work/node_modules/pkg before the clone returns. The child really runs in
+  // /etc, so its relative write must not resolve into an allowed area.
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
+    '50 21:00:00.000412 chdir("/etc") = 0',
+    '50 21:00:00.000414 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 51',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD <unfinished ...>',
+    '51 21:00:00.000425 chdir("/work/node_modules/pkg") = 0',
+    '50 21:00:00.000440 <... clone resumed>) = 60',
+    '60 21:00:00.000500 openat(AT_FDCWD, "cron.d/x", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/node_modules/pkg/cron.d/x'), false, `must not take the cwd set while the clone was pending: ${paths}`);
+  assert.ok(paths.some((p) => p === 'unresolved:cron.d/x' || p === '/etc/cron.d/x'), `fails closed: ${paths}`);
+  // Without a race the same shape resolves normally.
+  const calm = mini(lines.filter((l) => !l.startsWith('51 ')).map((l) => l.replace(' <unfinished ...>', ') = 60')).filter((l) => !l.includes('resumed')));
+  assert.ok(calm.observations.some((o) => o.path === '/etc/cron.d/x'));
+});

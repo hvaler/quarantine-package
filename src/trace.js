@@ -77,7 +77,8 @@ function parseLines(text) {
     const t = secondsOfDay(m[2], m[3], m[4], m[5]);
     let body = m[6];
     if (body.endsWith('<unfinished ...>')) {
-      pending.set(pid, { t, text: body.slice(0, -'<unfinished ...>'.length).trimEnd() });
+      // entry: where the call started in the sequence, so state at entry can be told from state at return.
+      pending.set(pid, { t, entry: calls.length, text: body.slice(0, -'<unfinished ...>'.length).trimEnd() });
       continue;
     }
     const resumed = /^<\.\.\. ([a-z0-9_]+) resumed>\s?(.*)$/.exec(body);
@@ -87,7 +88,7 @@ function parseLines(text) {
       if (!p) continue;
       body = p.text + resumed[2];
       const c = splitCall(body);
-      if (c) calls.push({ pid, t: p.t, ...c });
+      if (c) calls.push({ pid, t: p.t, entry: p.entry, ...c });
       continue;
     }
     const c = splitCall(body);
@@ -154,7 +155,9 @@ function analyse(text, opts = {}) {
   const seen = new Set(); // pids (tgids) with at least one traced call
   const exeFromOwnExec = new Set(); // pids whose exe was set by their own successful execve
   const ownCwd = new Set(); // pids that changed their cwd themselves (chdir/fchdir)
-  for (const c of calls) {
+  const cwdChangedAt = new Map(); // tgid -> index of its last chdir/fchdir in calls
+  for (let ci = 0; ci < calls.length; ci++) {
+    const c = calls[ci];
     const p = tg(c.pid);
     seen.add(p);
     if (!cwd.has(p)) cwd.set(p, null);
@@ -174,7 +177,11 @@ function analyse(text, opts = {}) {
             // F-D2-1: cwd is not changed by exec, so it is inherited whenever the
             // child has not set its own (even if its exec was printed first);
             // exe/argv keep the seen guard (AF-5).
-            if (!ownCwd.has(child)) cwd.set(child, cwd.get(p));
+            // The child got the cwd the parent had when the clone was entered. If another
+            // thread of the parent changed it while the clone was pending, that cwd is
+            // not known here: unresolved (fail closed), never the later one.
+            const raced = c.entry !== undefined && (cwdChangedAt.has(p) ? cwdChangedAt.get(p) >= c.entry : false);
+            if (!ownCwd.has(child)) cwd.set(child, raced ? null : cwd.get(p));
             if (!seen.has(child)) {
               if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
               if (argv.has(p)) argv.set(child, argv.get(p));
@@ -221,13 +228,13 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'chdir': {
-        if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
+        if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); cwdChangedAt.set(p, ci); }
         break;
       }
       case 'fchdir': {
         // strace -y prints the directory behind the fd: fchdir(3</work/x>)
         const d = /^\d+<([^>]*)>/.exec(c.args);
-        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); }
+        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); cwdChangedAt.set(p, ci); }
         break;
       }
       case 'socket': {
