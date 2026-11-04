@@ -151,8 +151,11 @@ function analyse(text, opts = {}) {
     return cur;
   };
 
+  const seen = new Set(); // pids (tgids) with at least one traced call
+  const exeFromOwnExec = new Set(); // pids whose exe was set by their own successful execve
   for (const c of calls) {
     const p = tg(c.pid);
+    seen.add(p);
     if (!cwd.has(p)) cwd.set(p, null);
     const base = { pid: p, tid: c.pid, t: c.t, syscall: c.name, ret: c.ret, errno: c.errno };
     switch (c.name) {
@@ -164,9 +167,14 @@ function analyse(text, opts = {}) {
           } else if (!parent.has(child)) {
             parent.set(child, p);
             tgid.set(child, child);
-            cwd.set(child, cwd.get(p));
-            if (exe.has(p)) exe.set(child, exe.get(p));
-            if (argv.has(p)) argv.set(child, argv.get(p));
+            // AF-5: with strace -f the child's own events (e.g. its execve) can be
+            // printed before the parent's clone return. Inherit state only for a
+            // child that has not been seen yet; never overwrite what it set itself.
+            if (!seen.has(child)) {
+              cwd.set(child, cwd.get(p));
+              if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
+              if (argv.has(p)) argv.set(child, argv.get(p));
+            }
           }
         } else if (c.ret === -1) {
           events.push({ ...base, type: 'fork-failed' });
@@ -195,11 +203,14 @@ function analyse(text, opts = {}) {
           // under us (TOCTOU), so it stays an unresolved /proc path: opaque.
           let resolved = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
           const procExe = resolved && /^\/proc\/(self|thread-self)\/exe$/.exec(resolved);
-          if (procExe) resolved = exe.get(p) || null;
+          // AF-5: resolve only from this pid's own traced execve; an inherited (or
+          // order-dependent) value is not trusted, so the exec stays opaque.
+          if (procExe) resolved = exeFromOwnExec.has(p) ? (exe.get(p) || null) : null;
           // SR-1: note whether reaching the target needed a symlink the task created.
           const path = resolved ? canonical(resolved) : rawExe;
           const viaLink = !!(resolved && path !== resolved);
           exe.set(p, path);
+          exeFromOwnExec.add(p);
           argv.set(p, av);
           events.push({ ...base, type: 'exec', path, rawPath: rawExe, argv: av, envp, viaLink });
         }
