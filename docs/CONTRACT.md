@@ -98,7 +98,7 @@ Every object the product creates is named `ar-<prefix>-<role>-<taskId>` (`taskId
   - It polls every 500 ms, sweeps once, then sweeps again after 3 s.
 - Ctrl+C / `SIGTERM` (AF-7): the first signal stops the task at once.
   - No new container, network or volume is created or started after it; in-flight docker clients are killed.
-  - Every object of the task is removed (two sweeps, 1 s apart), the receipt is written with `status: aborted`, `abortReason: interrupted`, `verdict: null` and `interrupt: {signal, signalledAt, repeatedSignals, teardownSeconds}`, and the CLI exits 130. The receipt path is printed on stderr; no stdout JSON line.
+  - Every object of the task is removed (two sweeps, 1 s apart), the receipt is written with `status: aborted`, `abortReason: interrupted`, `verdict: null` and `interrupt: {signal, signalledAt, repeatedSignals, teardownSeconds}`, and the CLI exits 130. The receipt path is printed on stderr; the stdout JSON line, if the task flow reaches it before the exit, reports the same interrupted receipt.
   - Deadline: 9 s from the signal. If the teardown has not finished by then, the CLI exits anyway and the watchdog (left running) sweeps the task once the CLI is gone.
   - A second Ctrl+C while this runs is ignored: it never skips or restarts the teardown.
 - Every `analyse` first runs the startup reaper (scope above). `cleanup` removes all objects of the prefix.
