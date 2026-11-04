@@ -112,10 +112,10 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/
 apt-get update && apt-get install -y caddy
 mkdir -p /var/log/caddy && chown caddy:caddy /var/log/caddy
 sed 's/qp.example.com/<your-dns-name>/' /opt/quarantine-package/deploy/Caddyfile > /etc/caddy/Caddyfile
-systemctl reload caddy
+systemctl restart caddy
 curl -fsS https://<your-dns-name>/healthz
 ```
-**Check:** the public `/healthz` answers over HTTPS.
+**Check:** the public `/healthz` answers over HTTPS. The Caddyfile turns Caddy's local admin API off (`admin off`); after editing it, restart Caddy with `systemctl restart caddy`.
 
 ## 9. Verify (C15, C16)
 
@@ -124,11 +124,11 @@ mobile data).
 1. Run the three demos.
 2. Open each receipt link.
 
-**C16, on the VM.** Run this while no web task is running, because the leftover check counts every task of the
-prefix:
+**C16, on the VM.** The checks run their own tasks under the run prefix `qpchk`, so they never count or touch the live
+web service's tasks (prefix `qp`):
 ```sh
 cd /opt/quarantine-package
-sudo -u qp env QP_RECEIPTS_DIR=/var/lib/quarantine-package/receipts sh deploy/c16-checks.sh https://<your-dns-name>
+sudo -u qp sh deploy/c16-checks.sh https://<your-dns-name>
 ```
 **Check:** every line is `PASS`, and the script prints `evidence: evidence/c16-<utc>.json`. The checks are:
 - the C2 host probe (nothing left the VM);
@@ -144,5 +144,5 @@ sudo -u qp env QP_RECEIPTS_DIR=/var/lib/quarantine-package/receipts sh deploy/c1
 |---|---|
 | Logs | `journalctl -u qp-web -f` (never contains the key) |
 | Stop | `systemctl stop qp-web`. Running tasks are interrupted and torn down within 10 s. |
-| Leftover check / cleanup | `sudo -u qp node src/cli.js leftovers` / `sudo -u qp node src/cli.js cleanup` |
+| Leftover check / cleanup | `sudo -u qp node src/cli.js leftovers`. `cleanup` removes **every** object of the prefix, so run it only with the service stopped: `systemctl stop qp-web && sudo -u qp node src/cli.js cleanup` |
 | Update | `git fetch && git checkout <NEW_SHA> && sudo -u qp npm run build:images && systemctl restart qp-web` |

@@ -4,8 +4,9 @@
 # Prints one PASS/FAIL line per check and writes evidence/c16-<utc>.json. Exit 0 only if all pass.
 set -u
 URL="${1:?usage: sh deploy/c16-checks.sh https://<public-host>}"
-export QP_RUN_PREFIX="${QP_RUN_PREFIX:-qp}"
-export QP_RECEIPTS_DIR="${QP_RECEIPTS_DIR:-/var/lib/quarantine-package/receipts}"
+# Own run prefix: never counts or touches the live web service's tasks (prefix qp).
+export QP_RUN_PREFIX="${QP_C16_PREFIX:-qpchk}"
+export QP_RECEIPTS_DIR="${QP_RECEIPTS_DIR:-/opt/quarantine-package/evidence/c16-receipts}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p evidence
 OUT="evidence/c16-$TS.json"

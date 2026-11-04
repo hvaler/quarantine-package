@@ -1,3 +1,8 @@
+# Global options: no local admin API (it would let any local process rewrite the live proxy config).
+{
+	admin off
+}
+
 # Replace qp.example.com with the VM's DNS name (an A record pointing at the VM).
 # Caddy obtains and renews the TLS certificate automatically.
 qp.example.com {

@@ -25,11 +25,23 @@ RestartSec=3
 # Stop: SIGTERM interrupts running tasks; each CLI tears its task down within 10 s
 KillSignal=SIGTERM
 TimeoutStopSec=20
+# The docker group is root-equivalent (README L-14); the rest is defence in depth.
 NoNewPrivileges=yes
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=/var/lib/quarantine-package /opt/quarantine-package/state /opt/quarantine-package/evidence
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/quarantine-package /opt/quarantine-package/state
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
