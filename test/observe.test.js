@@ -501,3 +501,55 @@ test('F-D2-1 race: a cwd change by another parent thread while the clone is pend
   const calm = mini(lines.filter((l) => !l.startsWith('51 ')).map((l) => l.replace(' <unfinished ...>', ') = 60')).filter((l) => !l.includes('resumed')));
   assert.ok(calm.observations.some((o) => o.path === '/etc/cron.d/x'));
 });
+
+test('L-7 race: a sibling chdir entered before the fork but printed resumed after an atomic clone line leaves the child cwd unresolved', () => {
+  // Parent 50 in /tmp; thread 51 enters chdir("/home/qp") (pending), thread 50's
+  // clone is printed in full, then 51's chdir resumes. The child may really be in
+  // /home/qp: its relative ".npmrc" must not be reported as /tmp/.npmrc.
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
+    '50 21:00:00.000412 chdir("/tmp") = 0',
+    '50 21:00:00.000414 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 51',
+    '51 21:00:00.000418 chdir("/home/qp" <unfinished ...>',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '51 21:00:00.000430 <... chdir resumed>) = 0',
+    '60 21:00:00.000500 openat(AT_FDCWD, ".npmrc", O_RDONLY) = -1 ENOENT (No such file or directory)',
+  ];
+  const ob = mini(lines);
+  const paths = ob.observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/tmp/.npmrc'), false, `must not take the pre-chdir cwd: ${paths}`);
+  // Fail closed: either the credential path is seen, or paths-resolved fails (review).
+  assert.ok(paths.includes('/home/qp/.npmrc') || markerOf(ob, 'paths-resolved').ok === false, `fails closed: ${paths}`);
+});
+
+test('L-7 race: worker-thread spawn while the main thread flips cwd (adv-thread-chdir-race shape) fails closed', () => {
+  // node 50: main thread 50 does chdir("/etc") pending while worker 52 spawns 60.
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "race.js"], 0x0) = 0',
+    '50 21:00:00.000411 chdir("/work") = 0',
+    '50 21:00:00.000414 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 52',
+    '52 21:00:00.000420 clone(child_stack=0x1, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>',
+    '50 21:00:00.000421 chdir("/etc") = 0',
+    '60 21:00:00.000425 execve("/usr/local/bin/node", ["node", "w.js"], 0x0) = 0',
+    '52 21:00:00.000440 <... clone resumed>) = 60',
+    '60 21:00:00.000500 openat(AT_FDCWD, "cron.d/adv-race", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.equal(paths.includes('/work/cron.d/adv-race'), false, `must not resolve into /work: ${paths}`);
+  assert.ok(paths.some((p) => p === 'unresolved:cron.d/adv-race' || p === '/etc/cron.d/adv-race'), `fails closed: ${paths}`);
+});
+
+test('L-7 race: a sibling chdir that completed before the clone entry is inherited normally (no false race)', () => {
+  const lines = [
+    '40 21:00:00.000400 clone(child_stack=NULL, flags=SIGCHLD) = 50',
+    '50 21:00:00.000410 execve("/usr/local/bin/node", ["node", "x.js"], 0x0) = 0',
+    '50 21:00:00.000414 clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 51',
+    '51 21:00:00.000418 chdir("/work/node_modules/pkg") = 0',
+    '50 21:00:00.000420 clone(child_stack=NULL, flags=SIGCHLD) = 60',
+    '60 21:00:00.000500 openat(AT_FDCWD, "build/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3',
+  ];
+  const paths = mini(lines).observations.map((o) => o.path).filter(Boolean);
+  assert.ok(paths.includes('/work/node_modules/pkg/build/out.txt'), `${paths}`);
+});

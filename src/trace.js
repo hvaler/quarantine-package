@@ -70,15 +70,16 @@ function execArgs(args) {
 function parseLines(text) {
   const pending = new Map();
   const calls = [];
+  let seq = 0; // print position of each syscall line: entry/exit of a call as strace serialised them
   for (const raw of String(text).split(/\r?\n/)) {
     const m = LINE.exec(raw);
     if (!m) continue;
+    seq += 1;
     const pid = Number(m[1]);
     const t = secondsOfDay(m[2], m[3], m[4], m[5]);
     let body = m[6];
     if (body.endsWith('<unfinished ...>')) {
-      // entry: where the call started in the sequence, so state at entry can be told from state at return.
-      pending.set(pid, { t, entry: calls.length, text: body.slice(0, -'<unfinished ...>'.length).trimEnd() });
+      pending.set(pid, { t, entry: seq, text: body.slice(0, -'<unfinished ...>'.length).trimEnd() });
       continue;
     }
     const resumed = /^<\.\.\. ([a-z0-9_]+) resumed>\s?(.*)$/.exec(body);
@@ -88,11 +89,11 @@ function parseLines(text) {
       if (!p) continue;
       body = p.text + resumed[2];
       const c = splitCall(body);
-      if (c) calls.push({ pid, t: p.t, entry: p.entry, ...c });
+      if (c) calls.push({ pid, t: p.t, entry: p.entry, exit: seq, ...c });
       continue;
     }
     const c = splitCall(body);
-    if (c) calls.push({ pid, t, ...c });
+    if (c) calls.push({ pid, t, entry: seq, exit: seq, ...c });
   }
   return calls;
 }
@@ -155,7 +156,12 @@ function analyse(text, opts = {}) {
   const seen = new Set(); // pids (tgids) with at least one traced call
   const exeFromOwnExec = new Set(); // pids whose exe was set by their own successful execve
   const ownCwd = new Set(); // pids that changed their cwd themselves (chdir/fchdir)
-  const cwdChangedAt = new Map(); // tgid -> index of its last chdir/fchdir in calls
+  // L-7 / F-D2-1 race: every successful chdir/fchdir with its print interval. A
+  // thread is stopped at syscall entry until strace handles it, so a chdir can
+  // only take effect between its entry and exit stops; one whose interval
+  // overlaps a clone's interval (also one resumed later) may or may not be in
+  // the child's cwd.
+  const cwdChanges = calls.filter((x) => (x.name === 'chdir' || x.name === 'fchdir') && x.ret === 0);
   for (let ci = 0; ci < calls.length; ci++) {
     const c = calls[ci];
     const p = tg(c.pid);
@@ -180,7 +186,9 @@ function analyse(text, opts = {}) {
             // The child got the cwd the parent had when the clone was entered. If another
             // thread of the parent changed it while the clone was pending, that cwd is
             // not known here: unresolved (fail closed), never the later one.
-            const raced = c.entry !== undefined && (cwdChangedAt.has(p) ? cwdChangedAt.get(p) >= c.entry : false);
+            // Another thread of this group (or a thread not yet attributed) changing
+            // cwd during the clone: the child's cwd is unknown (fail closed).
+            const raced = cwdChanges.some((d) => d.pid !== c.pid && d.pid !== child && (!tgid.has(d.pid) || tg(d.pid) === p) && d.entry <= c.exit && d.exit >= c.entry);
             if (!ownCwd.has(child)) cwd.set(child, raced ? null : cwd.get(p));
             if (!seen.has(child)) {
               if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
@@ -228,13 +236,13 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'chdir': {
-        if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); cwdChangedAt.set(p, ci); }
+        if (c.ret === 0) { cwd.set(p, resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
         break;
       }
       case 'fchdir': {
         // strace -y prints the directory behind the fd: fchdir(3</work/x>)
         const d = /^\d+<([^>]*)>/.exec(c.args);
-        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); cwdChangedAt.set(p, ci); }
+        if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') ? normalize(d[1]) : null); ownCwd.add(p); }
         break;
       }
       case 'socket': {
