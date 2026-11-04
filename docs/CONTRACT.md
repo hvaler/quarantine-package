@@ -399,3 +399,51 @@ node src/cli.js smoke-model --out evidence/c11-smoke.json
 - It analyses `express@4.21.2`, `lodash@4.17.21`, `chalk@4.1.2` and the hostile fixture.
 - Per package it writes the verdict, the model used, the status, the latency and tokens per attempt, the harness outcome, retries, and the prediction-vs-observed statuses.
 - The evidence file is secret-scanned and checked for the key before it is written. It never contains the key or any property of it.
+
+## 10. Web app (S3: C12–C14, S3-SEC)
+
+**Entry point:** `node src/web/server.js` (or `npm run web`). One HTTP port, no Docker or admin endpoint. Analysis runs in a child CLI process (`node src/cli.js analyse …`, argv only), never in the request path. Receipts are read from `QP_RECEIPTS_DIR` by task id, so any CLI-made receipt is served.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `QP_WEB_PORT` | listen port, must be within 8080–8089 | 8080 |
+| `QP_WEB_HOST` | listen address | `127.0.0.1` |
+| `QP_WEB_CONCURRENCY` | tasks run at once, 1 or 2 | 1 |
+| `QP_WEB_QUEUE_MAX` | waiting tasks; beyond this, 503 "queue full" | 5 |
+| `QP_WEB_RATE_MAX` / `QP_WEB_RATE_WINDOW_S` | analyses per client IP per window | 5 per 600 s |
+| `QP_WEB_TRUSTED_PROXIES` | comma-separated proxy IPs whose `X-Forwarded-For` is believed | none (XFF ignored) |
+| `QP_WEB_MODEL_CAP` | daily cap on model calls (UTC day), persisted; `0` refuses every new analysis | 60 |
+| `QP_WEB_STATE_FILE` | where the daily count is persisted | `./state/web-state.json` |
+
+The CLI variables (`QP_RUN_PREFIX`, `QP_RECEIPTS_DIR`, `QP_MODEL*`, `VULTR_INFERENCE_KEY`) pass to the child CLI unchanged. The key stays in this process and its child; it is never sent to a browser, logged, or written to a receipt.
+
+**Routes.**
+
+| Method and path | Purpose |
+|---|---|
+| `GET /` | the form (`name@version`) and three one-click demos |
+| `POST /analyse` | form submit (`spec=` or `demo=`), 303 to `/jobs/{jobId}` |
+| `POST /api/analyse` | JSON `{"spec": "name@version"}` or `{"demo": "express"\|"netbenign"\|"hostile"}`, gives 202 `{jobId, status, jobUrl}`; errors are JSON `{error}` with 400, 429 (`Retry-After`) or 503 |
+| `GET /jobs/{jobId}` | progress page (polls the job; links to the receipt when done) |
+| `GET /api/jobs/{jobId}` | `{status: queued\|running\|done\|failed, position, receiptId, message}` |
+| `GET /r/{taskId}` | public, linkable receipt page: verdict, rules, prediction vs observed, explanation (labelled), observations, sinkhole log, limits applied, "sandbox destroyed" (C6 teardown result), known limitations |
+| `GET /api/receipts/{taskId}` | the receipt JSON |
+| `GET /healthz` | `{ok, queued, running}`; answers while tasks run (C14) |
+
+`jobId` is 16 hex characters and server-generated. `taskId` (the receipt id) is the CLI's 10 hex characters. Any other form is 404, so no path traversal is possible.
+
+**Demos.**
+- `express`: `express@4.21.2`, a popular benign package.
+- `netbenign`: a **repo fixture, never published**. Its install script checks for a binary download (a GET with no body), so the expected verdict is review, explained. I did not find a real small public package with a postinstall download that fits the size and dependency limits and can be verified without network. The fixture is labelled as such on the page.
+- `hostile`: the hostile repo fixture.
+
+**Input (S3-SEC b).** npm name grammar with an exact version or a semver range (`^`, `~`, `x`, `>=`, `<=`, `=`). Tags, URLs, git, file, tarball and alias specs are refused, as are shell metacharacters and paths. Only argv reaches the CLI.
+
+**Client IP (C13, X7).** `X-Forwarded-For` is honoured only when the TCP peer is in `QP_WEB_TRUSTED_PROXIES`. Then the client is the right-most entry that is not a trusted proxy. A malformed entry stops the walk at the last trusted view. `X-Real-IP` and `Forwarded` are never read.
+
+**Output (S3-SEC a).**
+- Every dynamic string is HTML-escaped (`& < > " ' \``). No receipt data is ever placed in an `href` or `src`.
+- The only client script is a fixed file (`/static/progress.js`). It sets `textContent` only, and links only to a checked receipt id.
+- Headers on every response: `Content-Security-Policy: default-src 'none'; script-src 'nonce-…'; style-src 'nonce-…'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+
+**Shutdown (S3-SEC f).** On SIGINT or SIGTERM the server stops accepting, empties the queue and sends SIGINT to each running CLI. Each CLI tears its task down within 10 s (AF-7), and the watchdog is the backstop.

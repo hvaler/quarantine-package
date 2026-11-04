@@ -4,11 +4,16 @@
   "private": true,
   "description": "Analyse an npm package inside a disposable, hardened, traced sandbox and get a receipt with a deterministic verdict.",
   "license": "MIT",
-  "bin": { "qp": "src/cli.js" },
-  "engines": { "node": ">=22.12" },
+  "bin": {
+    "qp": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "build:images": "node scripts/build-images.js",
     "test": "node --test \"test/*.test.js\"",
-    "qp": "node src/cli.js"
+    "qp": "node src/cli.js",
+    "web": "node src/web/server.js"
   }
 }

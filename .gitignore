@@ -3,3 +3,4 @@ receipts/
 .runs/
 __pycache__/
 *.pyc
+state/
