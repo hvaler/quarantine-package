@@ -32,9 +32,20 @@ function emit(rec) {
   }
 }
 
+// F-S2-1 (S2-SEC b): one-way latch. The product's harness.cjs enters the package
+// phase right before it loads the package; from then on everything in this process
+// is package activity (the package, the model-written harness, callbacks with no
+// package frame). Non-configurable and non-writable; calling it again, by anyone,
+// can only keep it set.
+let packagePhase = false;
+Object.defineProperty(globalThis, Symbol.for('qp.packagePhase'), {
+  value: () => { packagePhase = true; }, writable: false, configurable: false, enumerable: false,
+});
+
 function stackActor() {
   if (role === 'package') return 'package';
   if (role === 'npm' || role === 'qp-scan') return role;
+  if (packagePhase) return 'package';
   const holder = {};
   const saved = Error.stackTraceLimit;
   Error.stackTraceLimit = 64;

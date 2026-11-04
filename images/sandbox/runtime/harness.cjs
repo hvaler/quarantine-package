@@ -27,6 +27,9 @@ function describe(mod) {
 }
 
 async function main() {
+  // F-S2-1: from here on, everything in this process is the package (see preload.cjs).
+  const enterPackagePhase = globalThis[Symbol.for('qp.packagePhase')];
+  if (typeof enterPackagePhase === 'function') enterPackagePhase();
   let resolved;
   try {
     resolved = require.resolve(name, { paths: ['/work'] });
