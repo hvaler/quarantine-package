@@ -5,10 +5,16 @@
 const path = require('node:path');
 const { loadConfig, REPO_ROOT } = require('./config');
 const lifecycle = require('./lifecycle');
+const formats = require('./formats');
+
+const { FORMATS, EXIT, exitFor } = formats;
 
 const USAGE = `usage:
-  qp analyse <name>[@<version|tag>] [--host-probe]   analyse a registry package
-  qp analyse --fixture <name> [--host-probe]         analyse a local fixture from ./fixtures/<name>
+  qp analyse <name>[@<version|tag>] [--host-probe] [--format json|md|sarif]   analyse a registry package
+  qp analyse --fixture <name> [--host-probe] [--format json|md|sarif]         analyse a local fixture from ./fixtures/<name>
+      --format writes the receipt (json), a PR-comment Markdown (md) or SARIF 2.1.0 (sarif) to stdout;
+      without it, stdout is one JSON summary line. The receipt file is written either way.
+  qp export <receipt.json> --format json|md|sarif    convert a stored receipt (no re-run); exits like analyse
   qp cleanup                                         remove every object of this QP_RUN_PREFIX
   qp leftovers                                       list objects of this QP_RUN_PREFIX (exit 1 if any)
   qp scan-secrets [<path>...]                        pattern scan (default: the repo and ./receipts)
@@ -18,8 +24,10 @@ env: QP_RUN_PREFIX (default qp), QP_RECEIPTS_DIR (default ./receipts), QP_KEEP_T
      QP_SANDBOX_TIMEOUT_S, QP_DOWNLOAD_TIMEOUT_S, QP_DOWNLOAD_MAX_BYTES, QP_DOWNLOAD_MAX_PACKAGES,
      VULTR_INFERENCE_KEY (model key, read by this process only), QP_MODEL, QP_MODEL_FALLBACK, QP_MODEL_OFF=1,
      QP_MODEL_BASE_URL and QP_MODEL_TIMEOUT_MS (tests only)
-exit: 0 completed (any verdict) / clean, 1 leftovers or secret hits, 2 usage or invalid input,
-      3 aborted in the download phase, 4 infrastructure failure`;
+     QP_PUBLIC_URL (origin for absolute links in md/sarif), QP_OUTCOME_TIMEOUT_MS (outcome explanation, default 20000)
+exit (analyse): 0 install, 10 review, 20 do-not-install, 2 usage or invalid input, 3 aborted in the download phase,
+      4 infrastructure failure or tracer unavailable, 130 interrupted
+exit (other commands): 0 clean, 1 leftovers or secret hits, 2 usage`;
 
 async function main(argv) {
   const [cmd, ...rest] = argv;
@@ -28,7 +36,15 @@ async function main(argv) {
   switch (cmd) {
     case 'analyse': case 'analyze': {
       const hostProbe = rest.includes('--host-probe');
-      const args = rest.filter((a) => a !== '--host-probe');
+      let args = rest.filter((a) => a !== '--host-probe');
+      // S7 F1c: --format json|md|sarif writes that format of the receipt to stdout.
+      let format = null;
+      const fi = args.indexOf('--format');
+      if (fi >= 0) {
+        format = args[fi + 1];
+        if (!FORMATS.includes(format)) { console.error(USAGE); return EXIT.usage; }
+        args = args.filter((_, i) => i !== fi && i !== fi + 1);
+      }
       let target;
       if (args[0] === '--fixture') {
         if (args.length !== 2) { console.error(USAGE); return 2; }
@@ -45,8 +61,26 @@ async function main(argv) {
         abortReason: receipt.abortReason || null, hostProbePass: receipt.hostProbe ? receipt.hostProbe.pass : undefined,
         receipt: receiptPath,
       };
-      console.log(JSON.stringify(summary));
-      return exitCode;
+      if (format === 'json') process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+      else if (format === 'md') process.stdout.write(formats.toMarkdown(receipt, { baseUrl: process.env.QP_PUBLIC_URL || '' }));
+      else if (format === 'sarif') process.stdout.write(`${JSON.stringify(formats.toSarif(receipt, { baseUrl: process.env.QP_PUBLIC_URL || '' }), null, 2)}\n`);
+      else console.log(JSON.stringify(summary));
+      return exitFor(receipt, exitCode);
+    }
+    case 'export': {
+      // S7 F1d: a stored receipt in any format, with no re-run; exits like analyse.
+      const fi = rest.indexOf('--format');
+      const format = fi >= 0 ? rest[fi + 1] : null;
+      const files = rest.filter((_, i) => fi < 0 || (i !== fi && i !== fi + 1));
+      if (!FORMATS.includes(format) || files.length !== 1) { console.error(USAGE); return EXIT.usage; }
+      let receipt;
+      try { receipt = JSON.parse(require('node:fs').readFileSync(path.resolve(files[0]), 'utf8')); } catch (e) { console.error(`cannot read the receipt: ${String(e && e.code || e.message).slice(0, 80)}`); return EXIT.usage; }
+      if (!receipt || typeof receipt !== 'object' || !String(receipt.schema || '').startsWith('qp-receipt/')) { console.error('not a qp receipt'); return EXIT.usage; }
+      const base = { baseUrl: process.env.QP_PUBLIC_URL || '' };
+      if (format === 'json') process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+      else if (format === 'md') process.stdout.write(formats.toMarkdown(receipt, base));
+      else process.stdout.write(`${JSON.stringify(formats.toSarif(receipt, base), null, 2)}\n`);
+      return exitFor(receipt, receipt.status === 'completed' ? 0 : EXIT.infrastructure);
     }
     case 'cleanup': {
       const r = await lifecycle.cleanupAll(cfg.prefix);

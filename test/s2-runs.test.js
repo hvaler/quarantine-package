@@ -91,12 +91,37 @@ async function twoRunCase(hbRun) {
     const H2 = "module.exports = async () => { require('qp-fixture-hostile'); };";
     const reply = (h) => ({ status: 'ok', latencyMs: 1, usage: { total_tokens: 3 }, content: JSON.stringify({ prediction: { network: { expected: false }, filesOutsidePackage: { expected: false }, childProcesses: { expected: false } }, harness: h, explanation: 'fine' }) });
     const sent = [];
-    const modelSend = async (req) => { sent.push(req); return sent.length === 1 ? reply(H1) : reply(H2); };
+    // S7 E2e: the outcome call (its own system prompt) comes after the receipt with the
+    // verdict is written; it sees that receipt on disk with outcomeExplanation pending.
+    const { SYSTEM_PROMPT: OUTCOME_PROMPT } = require('../src/outcome');
+    const outcomeCalls = [];
+    let pendingBody = null;
+    const modelSend = async (req) => {
+      if (req.messages[0].content === OUTCOME_PROMPT) {
+        outcomeCalls.push(req);
+        const f = fs.readdirSync(receiptsDir).filter((x) => x.endsWith('.json'));
+        pendingBody = f.length === 1 ? fs.readFileSync(path.join(receiptsDir, f[0]), 'utf8') : null;
+        return { status: 'ok', latencyMs: 1, model: 'm', content: 'The install script tried to write to /etc/marker, which was refused.' };
+      }
+      sent.push(req);
+      return sent.length === 1 ? reply(H1) : reply(H2);
+    };
     const modelCfg = { baseUrl: 'http://fake', model: 'm', fallbackModel: '', maxTokens: 10, timeoutMs: 100, enabled: true };
-    const { receipt } = await analyse(cfg, { fixture: 'hostile' }, { modelSend, modelCfg, exit: () => {}, log: () => {} });
+    const { receipt, receiptPath } = await analyse(cfg, { fixture: 'hostile' }, { modelSend, modelCfg, exit: () => {}, log: () => {} });
 
     assert.equal(receipt.status, 'completed', JSON.stringify(receipt.abortDetail));
     assert.equal(sent.length, 2, 'exactly one feedback to the model');
+    assert.equal(outcomeCalls.length, 1, 'one outcome call, after the verdict');
+    const pend = JSON.parse(pendingBody);
+    assert.equal(pend.outcomeExplanation.status, 'pending', 'the verdict was written before the outcome call');
+    assert.equal(pend.verdict, 'do-not-install');
+    const fin = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    assert.equal(fin.outcomeExplanation.status, 'done');
+    assert.equal(fin.outcomeExplanation.source, 'model m');
+    assert.equal(fin.outcomeExplanation.guard.accepted, true);
+    assert.deepEqual(Object.keys(fin), Object.keys(pend), 'same fields, same order');
+    for (const k of Object.keys(pend)) if (k !== 'outcomeExplanation') assert.equal(JSON.stringify(fin[k]), JSON.stringify(pend[k]), `field ${k} unchanged by the rewrite`);
+    assert.deepEqual(fs.readdirSync(receiptsDir).filter((x) => x.endsWith('.tmp')), [], 'no temp file left');
     assert.match(sent[1].messages.at(-1).content, /runtime error in the sandbox: TypeError: boom in run 1/);
     assert.deepEqual(staged, [H1, H2], 'the retried harness is staged for run 2');
     assert.equal(receipt.runs.length, 2);

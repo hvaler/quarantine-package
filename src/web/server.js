@@ -19,6 +19,12 @@ const { parseRegistrySpec } = require('../spec');
 const { clientIp, parseTrusted } = require('./clientip');
 const { createRateLimit, createDailyCap } = require('./limits');
 const render = require('./render');
+const formats = require('../formats');
+
+// Absolute links in the Markdown/SARIF exports (e.g. https://qp.example.com). Only a
+// plain origin is accepted; anything else leaves the links relative.
+const PUBLIC_URL = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/;
+const publicUrlOf = (v) => (PUBLIC_URL.test(String(v || '')) ? String(v) : '');
 
 const RECEIPT_ID = /^[a-f0-9]{10}$/;
 const JOB_ID = /^[a-f0-9]{16}$/;
@@ -52,6 +58,7 @@ function webConfig(env = process.env) {
     modelCap: Number(env.QP_WEB_MODEL_CAP || 60),
     trusted: parseTrusted(env.QP_WEB_TRUSTED_PROXIES || ''),
     stateFile: path.resolve(env.QP_WEB_STATE_FILE || path.join(process.cwd(), 'state', 'web-state.json')),
+    publicUrl: publicUrlOf(env.QP_PUBLIC_URL),
   };
 }
 
@@ -99,7 +106,8 @@ function createApp(opts) {
           job.receiptId = summary.taskId;
           try {
             const rc = readReceipt(summary.taskId);
-            cap.add(rc && rc.model && Array.isArray(rc.model.attempts) ? rc.model.attempts.length : 0);
+            cap.add((rc && rc.model && Array.isArray(rc.model.attempts) ? rc.model.attempts.length : 0)
+              + (rc && rc.outcomeExplanation && rc.outcomeExplanation.attempt ? 1 : 0)); // S7: the outcome call counts too
           } catch (_) { /* receipt unreadable: nothing counted */ }
         } else {
           job.status = 'failed';
@@ -179,6 +187,7 @@ function createApp(opts) {
     }
     if (req.method === 'GET' && p === '/') return send(res, 200, render.homePage({ nonce, notice: cap.exhausted() ? 'The daily limit of model calls is reached; new analyses are paused until tomorrow (UTC). Existing receipts stay available.' : null }), nonce);
     if (req.method === 'GET' && p === '/static/progress.js') return send(res, 200, render.PROGRESS_JS, nonce, 'text/javascript; charset=utf-8');
+    if (req.method === 'GET' && p === '/static/receipt.js') return send(res, 200, render.RECEIPT_JS, nonce, 'text/javascript; charset=utf-8');
     if (req.method === 'POST' && (p === '/analyse' || p === '/api/analyse')) {
       const api = p === '/api/analyse';
       const ip = clientIp(req.socket.remoteAddress, req.headers['x-forwarded-for'], cfg.trusted);
@@ -207,6 +216,19 @@ function createApp(opts) {
       if (!job) return send(res, 404, JSON.stringify({ error: 'not found' }), nonce, 'application/json');
       const position = job.status === 'queued' ? queue.indexOf(job) + 1 : 0;
       return send(res, 200, JSON.stringify({ status: job.status, position, receiptId: job.receiptId, message: job.message }), nonce, 'application/json');
+    }
+    // S7 F1: formats derived from the stored receipt only (no re-run, no model text).
+    if (req.method === 'GET' && (m = /^\/api\/receipts\/([^/]+)\.sarif$/.exec(p))) {
+      let rc;
+      try { rc = RECEIPT_ID.test(m[1]) ? readReceipt(m[1]) : null; } catch (_) { rc = null; }
+      if (!rc) return send(res, 404, JSON.stringify({ error: 'not found' }), nonce, 'application/json');
+      return send(res, 200, JSON.stringify(formats.toSarif(rc, { baseUrl: cfg.publicUrl }), null, 2), nonce, 'application/sarif+json');
+    }
+    if (req.method === 'GET' && (m = /^\/r\/([^/]+)\.md$/.exec(p))) {
+      let rc;
+      try { rc = RECEIPT_ID.test(m[1]) ? readReceipt(m[1]) : null; } catch (_) { rc = null; }
+      if (!rc) return send(res, 404, 'not found\n', nonce, 'text/plain; charset=utf-8');
+      return send(res, 200, formats.toMarkdown(rc, { baseUrl: cfg.publicUrl }), nonce, 'text/markdown; charset=utf-8');
     }
     if (req.method === 'GET' && (m = /^\/api\/receipts\/([^/]+)$/.exec(p))) {
       if (!RECEIPT_ID.test(m[1])) return send(res, 404, JSON.stringify({ error: 'not found' }), nonce, 'application/json');

@@ -160,12 +160,12 @@ const badge = (value, prefix = '') => {
 
 const FOOT = '<footer class="foot">Runs on one Vultr Cloud Compute VM · LLM calls via Vultr Serverless Inference · MIT · <a href="https://github.com/hvaler/quarantine-package">GitHub</a></footer>';
 
-function page({ title, nonce, body, script = false, home = false }) {
+function page({ title, nonce, body, script = false, home = false, extraScript = null }) {
   const nav = home ? '<a href="#how">How it works</a>' : '<a href="/">New analysis</a>';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title><style nonce="${esc(nonce)}">${STYLE}</style></head><body><div class="wrap">
 <header class="top"><a class="brand" href="/">${icon('box')}Quarantine Package</a><nav>${nav}<a href="https://github.com/hvaler/quarantine-package">GitHub</a></nav></header>
-<main>${body}</main>${FOOT}</div>${script ? `<script nonce="${esc(nonce)}" src="/static/progress.js"></script>` : ''}</body></html>`;
+<main>${body}</main>${FOOT}</div>${script ? `<script nonce="${esc(nonce)}" src="/static/progress.js"></script>` : ''}${extraScript === '/static/receipt.js' ? `<script nonce="${esc(nonce)}" src="/static/receipt.js"></script>` : ''}</body></html>`;
 }
 
 // One-click demos. `label` is what the job page and the receipt call the task.
@@ -278,21 +278,47 @@ function receiptPage({ nonce, receipt }) {
 <dl class="kv"><dt>Receipt</dt><dd class="mono">${esc(r.taskId)}</dd><dt>Started</dt><dd class="mono">${esc(r.startedAt)}</dd><dt>Finished</dt><dd class="mono">${esc(r.finishedAt)}</dd>
 ${pkg.source === 'fixture' ? '<dt>Source</dt><dd>repo fixture, never published</dd>' : ''}${r.abortReason ? `<dt>Aborted</dt><dd class="mono">${esc(r.abortReason)} ${esc(r.abortDetail)}</dd>` : ''}</dl>
 <p class="note">Computed by fixed rules from what was observed. The model's explanation never changes it.</p></div></section>
-<section class="sec" aria-labelledby="r-h"><h2 id="r-h">${icon('list')}Rules that fired</h2>${(r.rulesFired || []).length ? table(r.rulesFired, [['Rule', (x) => x.id, { cls: 'mono' }], ['Tier', (x) => badge(String(x.tier)), { html: true }], ['Why', (x) => x.text], ['Observations', (x) => (x.observationIds || []).join(', '), { cls: 'mono' }]]) : none('None.')}</section>
+${useBlock(r)}${outcomeBlock(r)}<section class="sec" aria-labelledby="r-h"><h2 id="r-h">${icon('list')}Rules that fired</h2>${(r.rulesFired || []).length ? table(r.rulesFired, [['Rule', (x) => x.id, { cls: 'mono' }], ['Tier', (x) => badge(String(x.tier)), { html: true }], ['Why', (x) => x.text], ['Observations', (x) => (x.observationIds || []).join(', '), { cls: 'mono' }]]) : none('None.')}</section>
 <section class="sec feat" aria-labelledby="p-h"><h2 id="p-h">${icon('swap')}Prediction vs observed</h2>
 <p class="sub">Before the run, the model on Vultr Serverless Inference read the package and predicted its behaviour. The sandbox then recorded what happened.</p>
 ${counts.length ? `<div class="score">${counts.map(([s, n]) => badge(s, `${n} `)).join('')}</div>` : ''}
 ${pvo.length ? table(pvo, [['Dimension', (x) => x.dimension], ['Predicted', (x) => (x.predicted === null ? 'unknown' : String(x.predicted))], ['Observed', (x) => String(x.observed)], ['Result', (x) => badge(String(x.status)), { html: true }], ['Details', (x) => (x.observedDetail || []).join(', '), { cls: 'mono' }]]) : none('No prediction.')}</section>
 <section class="sec sink" aria-labelledby="s-h"><div class="sink-h"><h2 id="s-h">${icon('sink')}Sinkhole log</h2><p>Network attempts. Nothing left the sandbox.</p></div>
 ${truncNote(sink.length, allSink.length, r.taskId)}${sink.length ? table(sink, [['Type', (x) => x.type], ['Destination', (x) => x.dstName || x.name || x.host || x.dstIp || '', { cls: 'mono' }], ['Port', (x) => x.dstPort || '', { cls: 'n mono' }], ['SNI', (x) => x.sni || '', { cls: 'mono' }], ['Method / path', (x) => [x.method, x.path].filter(Boolean).join(' '), { cls: 'mono' }], ['Payload bytes', (x) => (x.payloadBytes === undefined ? '' : x.payloadBytes), { cls: 'n mono' }]]) : none('No network attempt.')}</section>
-<section class="sec" aria-labelledby="e-h"><h2 id="e-h">${icon('lines')}Explanation <span class="badge neu">model, informational</span></h2><pre>${esc(r.explanation && r.explanation.text ? r.explanation.text : 'none')}</pre>
+<section class="sec" aria-labelledby="e-h"><h2 id="e-h">${icon('lines')}Model's expectation before the run <span class="badge neu">model, informational</span></h2><pre>${esc(r.explanation && r.explanation.text ? r.explanation.text : 'none')}</pre>
 <p class="hint">Model status: ${esc(r.model ? r.model.status : 'none')}${r.model && r.model.missing && r.model.missing.length ? `; missing: ${esc(r.model.missing.join(', '))}` : ''}</p></section>
 <section class="sec" aria-labelledby="o-h"><h2 id="o-h">${icon('table')}Observations <span class="dim">${obs.length}</span></h2>${truncNote(obs.length, allObs.length, r.taskId)}${obs.length ? table(obs, [['Id', (x) => x.id, { cls: 'mono' }], ['Kind', (x) => x.kind, { cls: 'mono' }], ['Actor', (x) => x.actor, { cls: 'mono' }], ['Target', (x) => x.path || x.dest || x.name || (x.extra && x.extra.name) || '', { cls: 'mono' }], ['Blocked', blocked, { html: true }]]) : none('None.')}</section>
 <section class="sec" aria-labelledby="d-h"><h2 id="d-h">${icon('trash')}Sandbox destroyed</h2><p class="done${left && left.length ? ' no' : ''}">${icon(left && left.length ? 'x' : 'check')}<span>${esc(destroyed)}</span></p></section>
 <section class="sec" aria-label="Limits and known limitations">
 <details><summary>${icon('gauge')}Limits applied</summary><pre>${esc(JSON.stringify(r.limits || {}, null, 2))}</pre></details>
 <details><summary>${icon('info')}Known limitations</summary><ul>${(r.knownLimitations || []).map((l) => `<li>${esc(l)}</li>`).join('')}</ul></details></section>`;
-  return page({ title: `Receipt ${r.taskId || ''}`, nonce, body });
+  return page({ title: `Receipt ${r.taskId || ''}`, nonce, body, extraScript: RECEIPT_ID.test(String(r.taskId || '')) ? '/static/receipt.js' : null });
+}
+
+// S7 F1a: links to the derived formats and the "Copy for PR" button. The links are
+// built only from an id in the receipt-id format; without one, the block is omitted.
+// The button is created by /static/receipt.js (nonce'd): without script, the
+// Markdown link is the fallback.
+function useBlock(r) {
+  const id = String(r.taskId || '');
+  if (!RECEIPT_ID.test(id)) return '';
+  return `<section class="sec" aria-label="Use the result"><div class="row" id="acts" data-id="${id}"><a class="btn btn-q" href="/r/${id}.md">Markdown for a PR comment</a><a class="btn btn-q" href="/api/receipts/${id}" download="receipt-${id}.json">Download JSON</a><a class="btn btn-q" href="/api/receipts/${id}.sarif">SARIF</a></div></section>
+`;
+}
+
+// S7 E2b: "What happened", written after the verdict. Absent for receipts made
+// before S7 (they render as before). The text is escaped and labelled by source.
+function outcomeBlock(r) {
+  const oe = r.outcomeExplanation;
+  if (!oe || typeof oe !== 'object') return '';
+  const pending = oe.status === 'pending';
+  const fromModel = !pending && typeof oe.source === 'string' && oe.source.startsWith('model ');
+  const label = pending ? 'pending' : fromModel ? 'model, informational' : 'code template, informational';
+  const text = pending ? 'pending: the explanation is being written. The verdict above is final.' : (oe.text || 'none');
+  const why = !pending && oe.guard && oe.guard.accepted === false && oe.guard.reason ? `; model text not used: ${oe.guard.reason}` : '';
+  return `<section class="sec" aria-labelledby="w-h"><h2 id="w-h">${icon('lines')}What happened <span class="badge neu">${esc(label)}</span></h2><pre>${esc(text)}</pre>
+<p class="hint">${esc(oe.note || '')}${esc(why)}</p></section>
+`;
 }
 
 // Fixed client script: polls the job and writes text only.
@@ -303,4 +329,13 @@ st.textContent=j.status+(j.position?(' (position '+j.position+' in queue)'):'');
 if(j.receiptId&&/^[a-f0-9]{10}$/.test(j.receiptId)){ln.textContent='';const a=document.createElement('a');a.href='/r/'+j.receiptId;a.textContent='Open the receipt';ln.appendChild(a);return;}
 if(j.status==='failed'||j.status==='rejected')return;}catch(e){dt.textContent='connection lost, retrying';}setTimeout(tick,1500);}tick();})();`;
 
-module.exports = { esc, homePage, jobPage, receiptPage, messagePage, DEMOS, PROGRESS_JS };
+// S7 F1a: fixed client script for the receipt page. It adds the "Copy for PR" button
+// only when the clipboard API exists; on any failure it opens the Markdown instead.
+const RECEIPT_JS = `(()=>{const box=document.getElementById('acts');const id=box&&box.dataset.id;
+if(!id||!/^[a-f0-9]{10}$/.test(id)||!navigator.clipboard||!window.isSecureContext)return;
+const md='/r/'+id+'.md';const b=document.createElement('button');b.type='button';b.className='btn';b.textContent='Copy for PR';
+b.addEventListener('click',async()=>{try{const r=await fetch(md,{cache:'no-store'});if(!r.ok)throw new Error('http');
+await navigator.clipboard.writeText(await r.text());b.textContent='Copied';setTimeout(()=>{b.textContent='Copy for PR';},2000);}
+catch(e){window.location.href=md;}});box.insertBefore(b,box.firstChild);})();`;
+
+module.exports = { esc, homePage, jobPage, receiptPage, messagePage, DEMOS, PROGRESS_JS, RECEIPT_JS };

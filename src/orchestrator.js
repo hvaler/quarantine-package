@@ -16,6 +16,7 @@ const probe = require('./probe');
 const { redact, scanText } = require('./secrets');
 const { createInterrupt } = require('./interrupt');
 const model = require('./model');
+const outcome = require('./outcome');
 
 const KNOWN_LIMITATIONS = Object.freeze([
   'L-4: ICMP is out of scope: the sandbox has no capability to open raw sockets, and unprivileged ICMP is not logged.',
@@ -293,7 +294,10 @@ async function analyse(cfg, target, opts = {}) {
       ...(runs.length > 1 ? { sandboxRetry: scans[1] } : {}),
     };
     if (scans.some((x) => !x.pass)) receipt.secretScan.sandbox = { ...scans[0], pass: scans.every((x) => x.pass) };
-    return await finish({ receipt, exitCode: 0 });
+    const done = await finish({ receipt, exitCode: 0 });
+    // S7 E2e: the receipt with the verdict is already written (outcome pending);
+    // the informational explanation is added afterwards by an atomic rewrite.
+    return await completeOutcome(done);
   } catch (err) {
     receipt.status = 'aborted';
     receipt.abortReason = 'infrastructure';
@@ -494,6 +498,12 @@ async function analyse(cfg, target, opts = {}) {
       result.receipt.interrupt.repeatedSignals = interrupted.repeated;
     }
     result.receipt.finishedAt = clock.now().toISOString();
+    // S7 E2: a completed receipt carries outcomeExplanation. With the model off it is
+    // the template at once; otherwise "pending" until completeOutcome() rewrites it.
+    if (!interrupted && result.receipt.status === 'completed' && result.receipt.verdict) {
+      const ocfg = outcomeCfg();
+      result.receipt.outcomeExplanation = ocfg.enabled ? outcome.pending() : await outcome.explain({ receipt: result.receipt, cfg: ocfg });
+    }
     // C7: the receipt itself is pattern-scanned before it is written.
     let body = JSON.stringify(result.receipt, null, 2);
     const hits = scanText(body, 'receipt');
@@ -504,6 +514,28 @@ async function analyse(cfg, target, opts = {}) {
     const receiptPath = path.join(cfg.receiptsDir, `${result.receipt.taskId}.json`);
     fs.writeFileSync(receiptPath, body + '\n');
     return { ...result, receiptPath };
+  }
+
+  function outcomeCfg() { return opts.modelCfg || model.modelConfig(); }
+
+  // S7 E2e: the outcome call, after the verdict was written and the sandbox destroyed.
+  // Only outcomeExplanation changes; the rewrite is atomic (temp file + rename), so a
+  // reader sees either the pending receipt or the final one. If this process is
+  // interrupted meanwhile, the receipt stays valid with status "pending".
+  async function completeOutcome(done) {
+    const rc = done.receipt;
+    if (!rc.outcomeExplanation || rc.outcomeExplanation.status !== 'pending') return done;
+    const timeoutMs = Number(process.env.QP_OUTCOME_TIMEOUT_MS) > 0 ? Number(process.env.QP_OUTCOME_TIMEOUT_MS) : outcome.OUTCOME_TIMEOUT_MS;
+    const oe = await outcome.explain({ receipt: rc, send: opts.modelSend || model.vultrTransport(), cfg: outcomeCfg(), timeoutMs });
+    rc.outcomeExplanation = oe;
+    // Same C7 treatment as the first write (the guard already rejects model text the
+    // redactor would change, so only a receipt redacted the first time is redacted here).
+    let body = JSON.stringify(rc, null, 2);
+    if (scanText(body, 'receipt').length) body = redact(body).text;
+    const tmp = `${done.receiptPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, body + '\n');
+    fs.renameSync(tmp, done.receiptPath);
+    return done;
   }
 }
 
