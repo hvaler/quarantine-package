@@ -329,7 +329,7 @@ function template(receipt) {
   // The verdict itself is shown just above this text, so the template does not restate it.
   const s1 = parts.length ? `The sandbox recorded ${parts.join(', ')} by the package.`
     : letters.length ? 'The rules fired on the observations listed below.' : 'The sandbox recorded no file, network or process activity by the package.';
-  const s2 = letters.length ? `Rules ${letters.map((l) => `(${l})`).join(', ')} fired.` : 'No rule fired.';
+  const s2 = letters.length ? `Rule${letters.length === 1 ? "" : "s"} ${letters.map((l) => `(${l})`).join(', ')} fired.` : 'No rule fired.';
   const s3 = 'The sandbox was destroyed afterwards.';
   return [s1, s2, s3].join(' ');
 }
