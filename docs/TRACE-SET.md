@@ -7,7 +7,7 @@ This file records the evidence for the tracer's `-e trace=` set in
 
 At a075bd1 the set was a hand-written list of 44 names. File syscalls outside it produced no record, so a package whose only forbidden acts used them got `install` (L-19). Examples are `utimensat`, `fchownat`, `readlink` and `inotify_add_watch`.
 
-The S6 set had 88 names in d949e7de (94 after repair 1, see below), all listed explicitly:
+The S6 set had 88 names in d949e7de (95 after repair 1, see below), all listed explicitly:
 
 | Group | Names |
 |---|---|
@@ -140,7 +140,7 @@ How it is inherited:
 - Threads share the table of their thread group.
 - `CLONE_FILES` without `CLONE_THREAD` makes both sides' tables unknown for the whole trace (fail closed).
 - Pid 1 starts with fds 0–2 as stdio, which is not a file.
-- close, close_range, dup, dup2, dup3 and fcntl are added to the traced set (94 names). The guard test checks that each one is mapped.
+- close, close_range, dup, dup2, dup3 and fcntl are added to the traced set (94 names; 95 with unshare, below). The guard test checks that each one is mapped.
 
 How it is used:
 - **B1:** an fd-only call takes its path from the table.
@@ -163,3 +163,35 @@ How it is used:
 - The slices are in `test/fixtures/prod-traces/`, and no line is edited.
 - On d949e7de these slices give no rule a for B1–B3, and a:2 for N1.
 - On the repair they give rule a for B1–B3 (on `/etc/hostname` and `/etc/qpdir`), and no file rule for N1.
+
+### P1 (adversary msg ab9905b7): `..` after a link
+
+The kernel follows a symlink or magic link first, then walks `..` from its target (path_resolution(7)). Before this fix, `normalize()` collapsed `..` lexically first.
+
+`walk()` in `src/trace.js` now resolves a path component by component. At each prefix it follows, before the next `..`:
+- task-created symlinks. The target is kept unresolved and walked again each time the link is followed, so a link created later in the chain counts.
+- the image's 26 directory symlinks (`IMAGE_DIR_LINKS`, listed from `qp-sandbox:s1-683b3d47` with `find / -xdev -type l -xtype d`), for example `/lib64 -> usr/lib64` and `/var/run -> /run`.
+- `/dev/fd` and `/dev/std*`.
+- `/proc/<x>/root`.
+- `/proc/<x>/cwd`, through the tracked cwd.
+- `/proc/<x>/fd/N`, through the fd table.
+
+**Unresolved cases:** an unknown target makes the path unresolved. That covers an unknown fd, an unknown cwd, or more than 40 link hops.
+
+**Where `walk()` is used:**
+- every path argument in the file branches (`at()`, `nofollow()`);
+- symlink targets;
+- the chdir probe and the new cwd;
+- execve and execveat probes;
+- unix `connect` paths.
+
+The exec identity (`exe`) keeps its lexical resolution, so roles and instrumentation markers are unchanged.
+
+**Visible change:** paths through image links are now reported as their real path. For example, `/var/run/docker.sock` becomes `/run/docker.sock`. Both are in `DOCKER_SOCKETS`, so rule b fires as before. Two assertions in `test/observe.test.js` were updated to the real path.
+
+### Automated security review of 683b3d47 (addressed)
+
+1. **A thread created without `CLONE_FILES`, or a successful `unshare(CLONE_FILES)`, splits a table this model shares.** That group's table is now unknowable, so writes through its fds fire rule a.
+   - `unshare` is added to the traced set (95 names). It has an explicit no-op mapping, because it creates no file event.
+2. **An alias path was not followed through links.** `walk()` now covers it: links and fd aliases are substituted at every prefix.
+3. **`/dev/stdout` and `/dev/stderr` reached through a link.** They are resolved through the fd table by `walk()`, and `observe.js` `DEVICE_SINKS` keeps only `/dev/null` and `/dev/tty`.

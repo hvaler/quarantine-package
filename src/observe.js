@@ -9,7 +9,8 @@ const NPM_CLI_PATHS = ['/usr/local/bin/npm', '/usr/local/lib/node_modules/npm/bi
 // Repair 1 (B2): /dev/fd, /proc/self/fd and /proc/thread-self/fd are no longer
 // skipped here: trace.js resolves fd aliases through its fd table (a non-file fd
 // is dropped there; an unknown one is an unresolved write).
-const DEVICE_SINKS = ['/dev/null', '/dev/tty', '/dev/stdout', '/dev/stderr'];
+// /dev/stdout and /dev/stderr are resolved through the fd table in trace.js too.
+const DEVICE_SINKS = ['/dev/null', '/dev/tty'];
 const MAX_ALLOWED_AREA_WRITES = 200;
 const MAX_SPAWNS = 50;
 

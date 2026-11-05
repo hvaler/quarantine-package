@@ -94,7 +94,7 @@ test('writes: blocked /etc write and relative path resolved against chdir', () =
 
 test('credential access, /proc/self/environ and env reads in the harness use the stack actor', () => {
   const ob = run();
-  assert.ok(ob.observations.some((o) => o.kind === 'fs-access' && o.path === '/var/run/docker.sock' && o.actor === 'package'));
+  assert.ok(ob.observations.some((o) => o.kind === 'fs-access' && o.path === '/run/docker.sock' /* S6 P1: /var/run -> /run image link followed */ && o.actor === 'package'));
   assert.ok(ob.observations.some((o) => o.kind === 'fs-access' && o.path === '/home/qp/.npmrc' && o.actor === 'package'));
   assert.ok(ob.observations.some((o) => o.kind === 'proc-environ'));
   const reads = ob.observations.filter((o) => o.kind === 'env-read');
@@ -155,7 +155,7 @@ test('security: /proc/self/root and symlinks do not hide credential access', () 
     '40 21:00:00.100200 openat(AT_FDCWD, "/work/l/.ssh/id_rsa", O_RDONLY) = -1 ENOENT (No such file or directory)',
   ]);
   const paths = ob.observations.filter((o) => o.kind === 'fs-access').map((o) => o.path);
-  assert.ok(paths.includes('/var/run/docker.sock'));
+  assert.ok(paths.includes('/run/docker.sock') /* S6 P1: /var/run is an image link to /run */);
   assert.ok(paths.includes('/home/qp/.ssh/id_rsa'));
 });
 

@@ -28,4 +28,6 @@ Only directory names inside this folder are accepted.
 | `adv6-tardirfd` | S6 repair 1 (B3): `tar -xf /tmp/t.tar -C /etc` (writes relative to a bare dirfd) | `do-not-install` (a) |
 | `adv6-benign` | S6 repair 1 (N1): the same mechanisms on /work files only | `install` |
 
-The L-19 and adv6 fixtures (adversary's, checks 99737bcb) are not web demo cards.
+| `adv7-dotdot` | S6 repair 1 (P1): `..` after a symlink or `/proc/self/fd/N` (adversary checks 29e42bb0) | `do-not-install` (a, b) |
+
+The L-19, adv6 and adv7 fixtures (adversary checks 99737bcb, 29e42bb0) are not web demo cards.

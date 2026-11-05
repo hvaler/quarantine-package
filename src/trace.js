@@ -217,13 +217,27 @@ const FS_SYSCALLS = Object.freeze({
 // file calls traced before S6). Together with FS_SYSCALLS this is the mapped set.
 const LEGACY_SYSCALLS = Object.freeze([
   'clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'chdir', 'fchdir', 'getcwd',
-  'close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl',
+  'close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl', 'unshare',
   'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg',
   'openat', 'open', 'openat2', 'creat', 'mkdir', 'mkdirat', 'truncate', 'chmod', 'fchmodat',
   'unlink', 'unlinkat', 'rmdir', 'rename', 'renameat', 'renameat2', 'link', 'linkat',
   'symlink', 'symlinkat', 'access', 'faccessat', 'faccessat2', 'newfstatat', 'statx', 'stat', 'lstat',
 ]);
-const NOT_FILE_CALLS = new Set(['close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl', 'clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg']);
+// Repair 1 (P1): directory symlinks on the sandbox image's root filesystem, so
+// "<link>/../x" is walked from the link's target as the kernel does. Listed from
+// qp-sandbox:s1-683b3d47 with `find / -xdev -type l -xtype d` (26 entries; the
+// image is pinned by digest, docs/TRACE-SET.md). /dev/fd, /dev/std* and /proc
+// links are runtime links and are handled in walk() itself.
+const IMAGE_DIR_LINKS = Object.freeze({
+  '/bin': 'usr/bin', '/lib': 'usr/lib', '/lib64': 'usr/lib64', '/sbin': 'usr/sbin',
+  '/usr/local/man': 'share/man',
+  '/usr/share/doc/libgcc-s1': 'gcc-12-base', '/usr/share/doc/libstdc++6': 'gcc-12-base',
+  ...Object.fromEntries(['Africa', 'America', 'Antarctica', 'Arctic', 'Asia', 'Atlantic', 'Australia', 'Brazil', 'Canada', 'Chile', 'Etc', 'Europe', 'Indian', 'Mexico', 'Pacific', 'US']
+    .map((z) => [`/usr/share/zoneinfo/posix/${z}`, `../${z}`])),
+  '/var/lock': '/run/lock', '/var/run': '/run', '/var/spool/mail': '../mail',
+});
+
+const NOT_FILE_CALLS = new Set(['unshare', 'close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl', 'clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg']);
 const MAPPED_SYSCALLS = Object.freeze(new Set([...LEGACY_SYSCALLS, ...Object.keys(FS_SYSCALLS)]));
 
 // The path behind an fd as strace -y prints it ("3</etc/passwd>"), or why there is none.
@@ -323,6 +337,10 @@ function analyse(text, opts = {}) {
   const parentOf = new Map(); // child tgid -> parent tgid (non-thread clones), whole trace
   const filesShared = new Set(); // both sides of a CLONE_FILES non-thread clone: table unknowable
   for (const x of calls) {
+    // A thread created without CLONE_FILES, or any unshare(CLONE_FILES), splits a
+    // table this per-group model shares: that group's table is unknowable.
+    if (x.name === 'unshare' && /CLONE_FILES/.test(x.args) && x.ret !== -1) { filesShared.add(leader(x.pid)); continue; }
+    if (/^(clone|clone3)$/.test(x.name) && x.ret > 0 && /CLONE_THREAD/.test(x.args) && !/CLONE_FILES/.test(x.args)) { filesShared.add(leader(x.pid)); continue; }
     if (!/^(clone|clone3|fork|vfork)$/.test(x.name) || !(x.ret > 0) || /CLONE_THREAD/.test(x.args)) continue;
     if (!parentOf.has(x.ret)) parentOf.set(x.ret, leader(x.pid));
     if (/CLONE_FILES/.test(x.args)) { filesShared.add(leader(x.pid)); filesShared.add(x.ret); }
@@ -346,20 +364,58 @@ function analyse(text, opts = {}) {
     return (t && t.get(fd)) || { k: 'unknown' };
   };
   const fdSet = (pid, fd, e) => { const t = tableOf(pid); if (t && Number.isInteger(fd) && fd >= 0) { if (e) t.set(fd, e); else t.delete(fd); } };
-  // /proc/{self,thread-self,<pid>}/fd/N[/rest], /dev/fd/N[/rest] and /dev/std{in,out,err}
-  // name an open fd: resolve them through the table. Returns null when the path is
-  // not such an alias, { sink: true } for a non-file fd, { path } (null = unknown).
-  const fdAlias = (pid, path) => {
-    if (typeof path !== 'string') return null;
-    let m = /^\/(?:proc\/(self|thread-self|\d+)\/fd|dev\/fd)\/(\d+)(\/.*)?$/.exec(path);
-    let who; let fd; let rest = '';
-    if (m) { who = m[1] === undefined || m[1] === 'self' || m[1] === 'thread-self' ? pid : Number(m[1]); fd = Number(m[2]); rest = m[3] || ''; }
-    else if ((m = /^\/dev\/std(in|out|err)$/.exec(path))) { who = pid; fd = { in: 0, out: 1, err: 2 }[m[1]]; }
-    else return null;
-    const e = fdEntry(who, fd);
-    if (e.k === 'nonpath') return rest ? { path: null } : { sink: true };
-    if (e.k === 'path') return { path: normalize(`${e.path}${rest}`) };
-    return { path: null };
+  // ---- Repair 1 (P1): component-by-component resolution, the way the kernel walks
+  // a path (path_resolution(7)): at each prefix a link is followed BEFORE the next
+  // ".." is applied. Links followed: task-created symlinks, the image's directory
+  // symlinks (IMAGE_DIR_LINKS), /dev/fd and /dev/std*, /proc/<x>/root, /proc/<x>/cwd
+  // and /proc/<x>/fd/N (through the fd table). A component whose real target is
+  // unknown (unknown fd, unknown cwd, too many links) makes the path unresolved.
+  // Returns { path } (path null = unresolved) or { sink: true } (a non-file fd).
+  const procPid = (who, pid) => (who === 'self' || who === 'thread-self' ? pid : Number(who));
+  const walk = (pid, raw, baseDir, nofollowLast = false, depth = 0) => {
+    if (typeof raw !== 'string' || depth > 40) return { path: null };
+    let cur;
+    if (raw.startsWith('/')) cur = '/';
+    else if (typeof baseDir === 'string' && baseDir.startsWith('/')) cur = baseDir;
+    else return { path: null };
+    const segs = raw.split('/').filter((s) => s && s !== '.');
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      const last = i === segs.length - 1;
+      if (seg === '..') { const cut = cur.lastIndexOf('/'); cur = cut <= 0 ? '/' : cur.slice(0, cut); continue; }
+      cur = cur === '/' ? `/${seg}` : `${cur}/${seg}`;
+      // fd and procfs magic links: followed even as the last component (fail closed).
+      let m;
+      if ((m = /^\/proc\/(self|thread-self|\d+)\/fd\/(\d+)$/.exec(cur))) {
+        const e = fdEntry(procPid(m[1], pid), Number(m[2]));
+        if (e.k === 'path') { cur = e.path; continue; }
+        if (e.k === 'nonpath' && last) return { sink: true };
+        return { path: null };
+      }
+      if (cur === '/dev/fd') { const r = walk(pid, '/proc/self/fd', '/', false, depth + 1); if (r.path === null || r.sink) return r; cur = r.path; continue; }
+      if ((m = /^\/dev\/std(in|out|err)$/.exec(cur))) {
+        const e = fdEntry(pid, { in: 0, out: 1, err: 2 }[m[1]]);
+        if (e.k === 'path') { cur = e.path; continue; }
+        if (e.k === 'nonpath' && last) return { sink: true };
+        return { path: null };
+      }
+      if ((m = /^\/proc\/(self|thread-self|\d+)\/root$/.exec(cur))) { cur = '/'; continue; }
+      if ((m = /^\/proc\/(self|thread-self|\d+)\/cwd$/.exec(cur))) {
+        const w = cwd.get(tg(procPid(m[1], pid)));
+        if (typeof w !== 'string') return { path: null };
+        cur = w; continue;
+      }
+      if (last && nofollowLast) break;
+      // Task-created symlinks, then the image's directory symlinks.
+      const target = links.has(cur) ? links.get(cur) : IMAGE_DIR_LINKS[cur];
+      if (target !== undefined) {
+        const parent = cur.slice(0, cur.lastIndexOf('/')) || '/';
+        const r = walk(pid, target, parent, false, depth + 1);
+        if (r.path === null || r.sink) return { path: null };
+        cur = r.path;
+      }
+    }
+    return { path: cur };
   };
   const dropCloexec = (pid) => { const t = tableOf(pid); if (t) for (const [fd, e] of [...t]) if (e.cloexec) t.delete(fd); };
   for (let ci = 0; ci < calls.length; ci++) {
@@ -419,8 +475,9 @@ function analyse(text, opts = {}) {
           const a = pathArgs(c.args)[0];
           let r = null;
           if (a && a.str !== null) {
-            const dir = a.str.startsWith('/') ? '' : (a.base === 'cwd' ? cwd.get(p) : a.base);
-            if (dir !== null && dir !== undefined) r = canonical(normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p)));
+            let dir = a.str.startsWith('/') ? '/' : (a.base === 'cwd' ? cwd.get(p) : a.base);
+            if (dir === null && a.dirfd !== undefined) { const e = fdEntry(p, a.dirfd); dir = e.k === 'path' ? e.path : null; }
+            if (dir) { const w = a.str === '' ? { path: dir } : walk(p, a.str, dir); r = w.path || null; }
           }
           events.push({ ...base, type: 'fs-probe', path: r, rawPath: a ? a.str : null, unresolved: !r, blocked: c.ret === -1 });
         }
@@ -440,8 +497,8 @@ function analyse(text, opts = {}) {
         // A10 (S6, DEC-D5-6): an exec attempt is also an access of the path it
         // names (spawn('/var/run/docker.sock') probes it), successful or not.
         {
-          const r = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
-          events.push({ ...base, type: 'fs-probe', path: r ? canonical(r) : null, rawPath: rawExe, unresolved: !r, blocked: c.ret === -1 });
+          const w = typeof rawExe === 'string' ? walk(p, rawExe, cwd.get(p)) : { path: null };
+          events.push({ ...base, type: 'fs-probe', path: w.path || null, rawPath: rawExe, unresolved: !w.path, blocked: c.ret === -1 });
         }
         if (c.ret === 0) {
           // DEC-11r3: identify what was executed, not its name. The path is resolved
@@ -471,10 +528,12 @@ function analyse(text, opts = {}) {
         // the cwd before the call.
         {
           const raw = quotedStrings(c.args)[0];
-          const path = typeof raw === 'string' ? resolvePath(cwd.get(p), raw) : null;
-          events.push({ ...base, type: 'fs-probe', path: path ? canonical(path) : null, rawPath: raw ?? null, unresolved: !path, blocked: c.ret === -1 });
+          const w = typeof raw === 'string' ? walk(p, raw, cwd.get(p)) : { path: null };
+          events.push({ ...base, type: 'fs-probe', path: w.path || null, rawPath: raw ?? null, unresolved: !w.path, blocked: c.ret === -1 });
+          // P1: the new cwd is the walked (link-followed) directory.
+          if (c.ret === 0) { cwd.set(p, fsShared.has(p) ? null : (w.path || null)); ownCwd.add(p); }
         }
-        if (c.ret === 0) { cwd.set(p, fsShared.has(p) ? null : resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
+        if (c.ret === 0) { /* set above */ }
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
       }
@@ -485,6 +544,10 @@ function analyse(text, opts = {}) {
         if (d && d[1].startsWith('/')) events.push({ ...base, type: 'fs-probe', path: normalize(d[1]), rawPath: d[1], unresolved: false, blocked: c.ret === -1 });
         if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') && !fsShared.has(p) ? normalize(d[1]) : null); ownCwd.add(p); }
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
+        break;
+      }
+      case 'unshare': {
+        // Traced only for the fd-table pre-pass (CLONE_FILES); no file event.
         break;
       }
       case 'close': {
@@ -567,7 +630,8 @@ function analyse(text, opts = {}) {
         if (unix) {
           // Abstract sockets (@name) have no path; truncated or relative-without-cwd paths are unresolved.
           const raw = unix[3] ? null : unix[2];
-          const path = unix[1] || raw === null ? null : resolvePath(cwd.get(p), raw);
+          const w = unix[1] || raw === null ? { path: null } : walk(p, raw, cwd.get(p));
+          const path = w.path || null;
           events.push({ ...base, type: 'net-unix', path, rawPath: raw, abstract: !!unix[1], unresolved: !unix[1] && path === null, blocked: c.ret === -1 });
           break;
         }
@@ -600,42 +664,21 @@ function analyse(text, opts = {}) {
           const e = fdEntry(p, a.dirfd);
           return e.k === 'path' ? e.path : null;
         };
-        // Repair 1 (B2): a path that names an open fd (/proc/<pid>/fd/N, /dev/fd/N,
-        // /dev/std*) is the fd's file; a non-file fd is a sink; unknown is null.
-        const viaFd = (full, raw) => {
-          if (full === null) return { path: null, raw };
-          const alias = fdAlias(p, full);
-          if (!alias) return null;
-          return alias.sink ? { path: null, raw, sink: true } : { path: alias.path, raw };
-        };
-        const at = (i) => {
+        // P1: walked component by component (walk()), links followed before "..".
+        const resolveArg = (i, nofollowLast) => {
           const a = args[i];
           if (!a || a.str === null) return { path: null, raw: a ? a.str : null };
-          const dir = a.str.startsWith('/') ? '' : dirOf(a);
+          const dir = a.str.startsWith('/') ? '/' : dirOf(a);
           if (dir === null || dir === undefined) return { path: null, raw: a.str };
-          const full = normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p));
-          const fdr = viaFd(full, a.str);
-          if (fdr) return fdr;
-          return { path: canonical(full), raw: a.str };
+          const r = walk(p, a.str, dir, nofollowLast);
+          return r.sink ? { path: null, raw: a.str, sink: true } : { path: r.path, raw: a.str };
         };
+        const at = (i) => resolveArg(i, false);
         // Calls that act on the final path component itself (unlink, rmdir,
-        // rename, link, symlink, lstat) do not follow it: resolve the parent
-        // directories through task-created links, but not the last component.
-        const nofollow = (i) => {
-          const a = args[i];
-          if (!a || a.str === null) return { path: null, raw: a ? a.str : null };
-          const dir = a.str.startsWith('/') ? '' : dirOf(a);
-          if (dir === null || dir === undefined) return { path: null, raw: a.str };
-          const full = normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p));
-          if (full === null) return { path: null, raw: a.str };
-          // An fd alias as the last component is still resolved (fail closed: the
-          // kernel follows the magic link for chmod/chown/utimes/truncate/open).
-          const fdr = viaFd(full, a.str);
-          if (fdr) return fdr;
-          const cut = full.lastIndexOf('/');
-          const parent = cut <= 0 ? '/' : canonical(full.slice(0, cut));
-          return { path: normalize(`${parent}/${full.slice(cut + 1)}`), raw: a.str };
-        };
+        // rename, link, symlink, lstat) do not follow it: the parent directories
+        // are walked through links, the last component is not (fd and procfs magic
+        // links still are: fail closed).
+        const nofollow = (i) => resolveArg(i, true);
         // SR-1: a link is forgotten once its path is unlinked, removed or renamed
         // (either side of a rename), so a stale mapping can never name a later file.
         const forget = (r) => { if (r.path) { for (const l of [...links.keys()]) if (l === r.path || l.startsWith(`${r.path}/`)) links.delete(l); } };
@@ -672,11 +715,15 @@ function analyse(text, opts = {}) {
           // The link itself is a write; its target is an access to whatever it points at.
           const link = nofollow(args.length - 1);
           push('fs-write', link);
-          const target = args[0] && args[0].str !== null
-            ? { path: args[0].str.startsWith('/') ? normalize(args[0].str, cwd.get(p)) : (link.path ? normalize(`${link.path}/../${args[0].str}`, cwd.get(p)) : null), raw: args[0].str }
-            : { path: null, raw: null };
+          // P1: the target is kept unresolved (absolute, ".." intact) and walked
+          // each time the link is followed, so links created later in its chain count.
+          const raw = args[0] && args[0].str !== null ? args[0].str : null;
+          const linkDir = link.path ? (link.path.slice(0, link.path.lastIndexOf('/')) || '/') : null;
+          const stored = raw === null ? null : raw.startsWith('/') ? raw : (linkDir ? `${linkDir === '/' ? '' : linkDir}/${raw}` : null);
+          const tr = stored ? walk(p, stored, '/') : { path: null };
+          const target = { path: tr.sink ? null : tr.path, raw };
           push('fs-link-target', target);
-          if (!blocked && link.path && target.path) links.set(link.path, target.path);
+          if (!blocked && link.path && stored) links.set(link.path, stored);
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
           if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(c.args)) break;

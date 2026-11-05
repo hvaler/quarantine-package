@@ -146,3 +146,52 @@ test('repair 1 hardening: /proc/self/cwd/... with an unknown cwd is unresolved (
   assert.ok(ids(r.d).has('a'));
   assert.equal(r.ob.observations.find((o) => o.kind === 'completeness' && o.marker === 'paths-resolved').ok, false);
 });
+
+// ---- P1 (adversary msg ab9905b7): ".." after a link is walked from the link's target.
+const DEEP = '/usr/local/lib/node_modules/npm';
+
+test('P1 a1: symlink to a deep dir, then mkdir <link>/../../../../work/qpa is /usr/work/qpa (rule a), not /work/qpa', () => {
+  const r = run([`symlink("${DEEP}", "/tmp/qa") = 0`, 'mkdir("/tmp/qa/../../../../work/qpa", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(ids(r.d).has('a'));
+  assert.ok(writes(r.ob).includes('mkdir /usr/work/qpa'), writes(r.ob).join(', '));
+});
+
+test('P1 a2: /proc/self/fd/N/../../../../work/qpb walks from the fd\'s directory (rule a)', () => {
+  const r = run([`openat(AT_FDCWD</work>, "${DEEP}", O_RDONLY|O_CLOEXEC) = 21`, 'mkdir("/proc/self/fd/21/../../../../work/qpb", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(writes(r.ob).includes('mkdir /usr/work/qpb'), writes(r.ob).join(', '));
+});
+
+test('P1 b1/b2: credential reads through <link>/../.. and /proc/self/fd/N/../.. fire rule b', () => {
+  const b1 = run(['mkdir("/home/qp/qa", 0777) = 0', 'mkdir("/home/qp/qa/qb", 0777) = 0', 'symlink("/home/qp/qa/qb", "/tmp/qb") = 0',
+    'openat(AT_FDCWD</work>, "/tmp/qb/../../.ssh/id_rsa", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)']);
+  assert.ok(ids(b1.d).has('b'));
+  const b2 = run(['openat(AT_FDCWD</work>, "/home/qp/qa/qb", O_RDONLY|O_CLOEXEC) = 22',
+    'access("/proc/self/fd/22/../../.aws/credentials", F_OK) = -1 ENOENT (No such file or directory)']);
+  assert.ok(ids(b2.d).has('b'));
+});
+
+test('P1: image directory links are followed before ".." (/lib64/../work/x is /usr/work/x)', () => {
+  assert.ok(ids(run(['mkdir("/lib64/../work/x", 0777) = -1 EROFS (Read-only file system)']).d).has('a'));
+  // A link created later in the chain counts: the target is walked when followed.
+  const r = run(['symlink("a/../../etc", "/tmp/l") = 0', `symlink("${DEEP}", "/tmp/a") = 0`, 'mkdir("/tmp/l/qp", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(writes(r.ob).includes('mkdir /usr/local/lib/etc/qp'), writes(r.ob).join(', '));
+});
+
+test('P1: ordinary ".." paths without links are unchanged (no over-condemnation)', () => {
+  assert.ok(clean(run(['openat(AT_FDCWD</work>, "/work/node_modules/pkg/../other/x.js", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 23',
+    'mkdir("/tmp/a/../b", 0777) = 0', 'openat(AT_FDCWD</work>, "/usr/local/lib/node_modules/npm/../npm/index.js", O_RDONLY) = 24'])));
+});
+
+test('P1: chdir through a link sets the walked cwd for later relative paths', () => {
+  const r = run([`symlink("${DEEP}", "/tmp/qc") = 0`, 'chdir("/tmp/qc") = 0', 'mkdir("../../../../work/qpc", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(writes(r.ob).includes('mkdir /usr/work/qpc'), writes(r.ob).join(', '));
+});
+
+test('security review: a thread without CLONE_FILES, or unshare(CLONE_FILES), makes the group\'s fd table unknown', () => {
+  const thr = run(['openat(AT_FDCWD</work>, "/work/z", O_RDONLY) = 18',
+    'clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM) = 46', 'fchmod(18, 0644) = 0']);
+  assert.ok(ids(thr.d).has('a'));
+  const un = run(['openat(AT_FDCWD</work>, "/work/z", O_RDONLY) = 18', 'unshare(CLONE_FILES) = 0', 'fchmod(18, 0644) = 0']);
+  assert.ok(ids(un.d).has('a'));
+  assert.ok(clean(run(['unshare(CLONE_NEWUSER) = -1 EPERM (Operation not permitted)'])), 'unshare itself is not a file event');
+});

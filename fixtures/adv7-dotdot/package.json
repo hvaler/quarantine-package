@@ -1,0 +1,7 @@
+{
+  "name": "adv7-dotdot",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S6 adversary re-attack fixture: symlink or /proc/self/fd/N followed by .. (lexical normalize vs kernel walk), rules a and b",
+  "scripts": { "install": "node attempts.js" }
+}
