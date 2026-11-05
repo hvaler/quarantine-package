@@ -61,7 +61,7 @@ function vultrTransport(getKey = () => process.env.VULTR_INFERENCE_KEY) {
       let json;
       try { json = JSON.parse(text); } catch (_) { return { status: 'malformed', latencyMs, detail: 'response is not JSON' }; }
       const content = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-      return { status: 'ok', latencyMs, content: typeof content === 'string' ? content : '', usage: json.usage || null, model: json.model || model };
+      return { status: 'ok', latencyMs, content: typeof content === 'string' ? content : '', usage: json.usage || null, model: json.model || model, finishReason: (json.choices && json.choices[0] && typeof json.choices[0].finish_reason === 'string') ? json.choices[0].finish_reason : null };
     } catch (err) {
       const latencyMs = Date.now() - t0;
       if (err && err.name === 'AbortError') return { status: 'timeout', latencyMs };

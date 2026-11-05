@@ -526,7 +526,7 @@ async function analyse(cfg, target, opts = {}) {
     const rc = done.receipt;
     if (!rc.outcomeExplanation || rc.outcomeExplanation.status !== 'pending') return done;
     const timeoutMs = Number(process.env.QP_OUTCOME_TIMEOUT_MS) > 0 ? Number(process.env.QP_OUTCOME_TIMEOUT_MS) : outcome.OUTCOME_TIMEOUT_MS;
-    const oe = await outcome.explain({ receipt: rc, send: opts.modelSend || model.vultrTransport(), cfg: outcomeCfg(), timeoutMs });
+    const oe = await outcome.explain({ receipt: rc, send: opts.modelSend || model.vultrTransport(), cfg: outcomeCfg(), timeoutMs, logRejected: rejectedLogger(opts) });
     rc.outcomeExplanation = oe;
     // Same C7 treatment as the first write (the guard already rejects model text the
     // redactor would change, so only a receipt redacted the first time is redacted here).
@@ -576,6 +576,16 @@ function keepTrace(cfg, taskId, text, truncated) {
   return { file, bytes: Buffer.byteLength(body), truncated: !!truncated, secretScan: { pass: hits.length === 0, redactedLines: hits.length } };
 }
 
+// S8 G5: with QP_LOG_REJECTED=1 (off by default), a reply the guard rejected is written to
+// this process's stderr (the web server's journal captures it), as one redacted line of at
+// most 1000 characters of text. It never goes into the receipt.
+function rejectedLogger(opts = {}) {
+  const env = opts.env || process.env;
+  if (env.QP_LOG_REJECTED !== '1') return null;
+  const write = opts.stderr || ((s) => process.stderr.write(s));
+  return (rec) => write(`qp: outcome reply rejected ${JSON.stringify(rec)}\n`);
+}
+
 function abort(receipt, reason, detail, exitCode) {
   receipt.status = 'aborted';
   receipt.verdict = null;
@@ -586,4 +596,4 @@ function abort(receipt, reason, detail, exitCode) {
 
 function tail(s, n) { s = String(s || ''); return s.length > n ? `…${s.slice(-n)}` : s; }
 
-module.exports = { analyse, hardeningSnapshot, keepTrace, KNOWN_LIMITATIONS };
+module.exports = { analyse, hardeningSnapshot, keepTrace, KNOWN_LIMITATIONS, rejectedLogger };

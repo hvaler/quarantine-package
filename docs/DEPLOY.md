@@ -60,11 +60,18 @@ This is NodeSource's standard setup path. It runs their setup script as root; pi
 useradd --system --create-home --home-dir /home/qp --shell /usr/sbin/nologin qp
 usermod -aG docker qp
 git clone <repo-url> /opt/quarantine-package
-cd /opt/quarantine-package && git checkout <PINNED_SHA> && git log -1 --format=%H
 mkdir -p /var/lib/quarantine-package/receipts /opt/quarantine-package/state /opt/quarantine-package/evidence
 chown -R qp:qp /opt/quarantine-package /var/lib/quarantine-package
+cd /opt/quarantine-package
+sudo -u qp git checkout <PINNED_SHA>
+test "$(sudo -u qp git log -1 --format=%H)" = "<PINNED_SHA>" || { echo "STOP: wrong commit checked out"; exit 1; }
 ```
-**Check:** `git log -1` prints the pinned SHA.
+**Check:** the last line prints nothing. If it prints `STOP`, do not build, test or start anything.
+
+**Run git as `qp`.** The repository is owned by `qp`. As root, `git fetch` and `git checkout` fail
+with "detected dubious ownership". The old code then stays checked out, and a following
+build and restart silently deploy it again. So every git command on the VM runs as
+`sudo -u qp git …`, and the SHA check is a stop condition before any build, test or restart.
 
 The product has no npm dependencies, so `npm ci` has nothing to install and is not needed.
 
@@ -149,6 +156,6 @@ sudo -u qp sh deploy/c16-checks.sh https://<your-dns-name>
 | Logs | `journalctl -u qp-web -f` (never contains the key) |
 | Stop | `systemctl stop qp-web`. Running tasks are interrupted and torn down within 10 s. |
 | Leftover check / cleanup | `sudo -u qp node src/cli.js leftovers`. `cleanup` removes **every** object of the prefix, so run it only with the service stopped: `systemctl stop qp-web && sudo -u qp node src/cli.js cleanup` |
-| Update | `git fetch && git checkout <NEW_SHA> && sudo -u qp npm run build:images && systemctl restart qp-web` |
+| Update | `cd /opt/quarantine-package && sudo -u qp git fetch origin && sudo -u qp git checkout <NEW_SHA> && test "$(sudo -u qp git log -1 --format=%H)" = "<NEW_SHA>" && sudo -u qp npm test && sudo -u qp npm run build:images && systemctl restart qp-web`. Git runs as `qp`, and the SHA check stops the chain: if it fails, nothing is tested, built or restarted. |
 
 **Future hardening (not enabled now).** The unit has `NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`, an empty capability set, `ProtectKernel*`, `ProtectControlGroups`, `LockPersonality`, `RestrictSUIDSGID` and `UMask=0077`. Each of the following still needs a test VM, because it could break the docker CLI: `ProtectSystem=strict`, `PrivateDevices`, `RestrictAddressFamilies` and `SystemCallArchitectures=native`. The `docker` group stays root-equivalent (README L-14).

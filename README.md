@@ -224,7 +224,7 @@ A fixed guard checks the reply. Any doubt replaces it with a sentence built by c
 - or comes from a call that failed or timed out (20 s).
 
 On top of those checks, the guard uses an **allowlist**. Every word of the reply must come from a fixed
-descriptive vocabulary of about 400 words: files, network, processes, limits, prediction. That vocabulary has no
+descriptive vocabulary of about 410 words: files, network, processes, limits, prediction. That vocabulary has no
 advice, judgement or verdict word. "install" is allowed only in "install script", "install hook" and similar.
 So "you can add it", "nothing to worry about" or "the rules overreacted" fail in any wording, and so does any
 quoted path or host name. The prompt tells the model to describe those generically.
@@ -236,6 +236,13 @@ two more checks apply:
 
 The vocabulary also leaves out contrast words ("but"), minimisers ("only", "just"), "error", and "npm" and
 "harness", so the act cannot be moved off the package.
+
+**Making the model fit the guard (S8).** The guard is not loosened; the model is told the rules.
+- **The prompt** gives the model the exact rules the guard applies, including the whole word list. It also asks for a fixed shape: "Rule (x) fired:", then past-tense sentences about what the package did.
+- **One retry.** If the guard rejects the first reply, one retry is made inside the same 20 s budget. It carries only the reason code and the offending words of the model's own reply. Words that occur in any package-controlled string are dropped, and the rejected text is never sent back.
+- **Truncated replies.** A reply cut off at the token limit is never shown.
+- **Vocabulary changes.** Words added after the real-endpoint diagnosis, and the one word removed, are listed with their evidence in [`docs/L-20-vocabulary.md`](docs/L-20-vocabulary.md).
+- **Rejected texts.** With `QP_LOG_REJECTED=1` (off by default), rejected replies go to the process's stderr as one redacted line of at most 1000 characters; the web server's journal captures it. They never go into a receipt, page, `.md` or `.sarif`.
 
 The receipt records which text was used and why (`outcomeExplanation.source` and `guard.reason`). With
 `QP_MODEL_OFF=1` the template is always used. `verdict.js` never reads this field, and a unit test checks that.
@@ -296,7 +303,7 @@ Every receipt lists these in `knownLimitations`.
 | L-17 | Large dependency trees (over 50 MB unpacked or 300 packages, for example `@stellar/stellar-sdk`) are aborted at download with no verdict. The limits fit a 4 GB VM and are configurable. |
 | L-18 | The receipt page shows at most 300 observations and 200 sinkhole entries. When it cuts a list, it says "showing N of M" and links to the full receipt JSON at `/api/receipts/<id>`. |
 | L-19 | **Fixed** (S6, commits e3edf74..265f148; the fix is complete at 265f148, e3edf74 alone was rejected in review). The tracer missed file syscalls outside its hand-written list (`utimensat`, `fchownat`, `readlink`, `inotify_add_watch` and others), so a package whose only forbidden acts used them got `install`. The traced set is now strace 6.1's whole `%file` class (minus `getcwd`) plus the fd-only file calls, every traced call has a mapping or fails closed, and a unit test checks both against an independent reference list ([`docs/TRACE-SET.md`](docs/TRACE-SET.md)). |
-| L-20 | The "What happened" guard is lexical: fixed English phrase lists, rule-letter forms and a descriptive vocabulary allowlist. It fails closed, so a correct reply is often replaced by the code template (any word outside the vocabulary is enough). A reply that passes can still be odd or incomplete; it is labelled informational and never affects the verdict, the Markdown or the SARIF. If the CLI is interrupted during the call, the receipt stays `pending`. |
+| L-20 | The "What happened" guard is lexical: fixed English phrase lists, rule-letter forms and a descriptive vocabulary allowlist. It fails closed, so a correct reply can be replaced by the code template (any word outside the vocabulary is enough). S8 makes the model fit it: the prompt lists the rules and the vocabulary, and there is one retry; the measured rate is `MODEL_RATE` ([vocabulary evidence](docs/L-20-vocabulary.md)). A reply that passes can still be odd or incomplete; it is labelled informational and never affects the verdict, the Markdown or the SARIF. If the CLI is interrupted during the call, the receipt stays `pending`. |
 | H-1 | **Done.** The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).

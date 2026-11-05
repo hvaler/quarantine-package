@@ -107,7 +107,8 @@ function createApp(opts) {
           try {
             const rc = readReceipt(summary.taskId);
             cap.add((rc && rc.model && Array.isArray(rc.model.attempts) ? rc.model.attempts.length : 0)
-              + (rc && rc.outcomeExplanation && rc.outcomeExplanation.attempt ? 1 : 0)); // S7: the outcome call counts too
+              + (rc && rc.outcomeExplanation && Array.isArray(rc.outcomeExplanation.attempts) ? rc.outcomeExplanation.attempts.length
+                : rc && rc.outcomeExplanation && rc.outcomeExplanation.attempt ? 1 : 0)); // S7/S8: outcome calls (incl. the retry) count too
           } catch (_) { /* receipt unreadable: nothing counted */ }
         } else {
           job.status = 'failed';
