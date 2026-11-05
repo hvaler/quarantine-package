@@ -213,6 +213,21 @@ const CONTRADICTIONS = [
   ['do-not-install', ['b'], 'The package touched nothing sensitive.'],
   ['do-not-install', ['b'], 'The package touched no credential file.'],
   ['review', ['f'], 'The package made a DNS lookup but no connection.'],
+  // the adversary's P4 on cfb3b28: contradictions made only of allowed words (deny the finding)
+  ['do-not-install', ['a'], 'No rule fired.'],
+  ['do-not-install', ['a'], 'None of the rules fired.'],
+  ['do-not-install', ['a'], 'Rule (a) fired in error.'],
+  ['do-not-install', ['a'], 'Rule (a) fired by error; the package only read its own files.'],
+  ['do-not-install', ['a'], 'The package made no file, network or process attempts.'],
+  ['do-not-install', ['a'], 'The sandbox observed no activity by the package.'],
+  ['do-not-install', ['a'], 'The package did nothing outside its own folder.'],
+  ['do-not-install', ['a'], 'Only the harness wrote files; the package wrote no files.'],
+  ['do-not-install', ['a'], 'The write outside the package was made by npm, not by the package.'],
+  ['do-not-install', ['a'], 'The write outside the package was made by npm.'],
+  ['do-not-install', ['a'], 'The harness made the write.'],
+  ['do-not-install', ['a'], 'The package just read its own files.'],
+  ['review', ['f'], 'No rule fired.'],
+  ['review', ['f'], 'The request was made by npm, not by the package.'],
 ];
 
 test('E2c: every contradiction in the corpus is rejected', () => {
@@ -227,7 +242,7 @@ test('E2c: the vocabulary holds no verdict, judgement or advice word', () => {
     'recommend', 'good', 'bad', 'fine', 'ok', 'okay', 'well', 'expected', 'normal', 'usual', 'typical', 'routine', 'worry',
     'concern', 'risk', 'threat', 'danger', 'dangerous', 'unsafe', 'malicious', 'suspicious', 'harmful', 'trust', 'trusted',
     'wrong', 'right', 'correct', 'false', 'true', 'positive', 'negative', 'overreacted', 'remove', 'delete', 'stop', 'kill',
-    'i', 'you', 'we', 'yes',
+    'i', 'you', 'we', 'yes', 'error', 'errors', 'failure', 'mistake', 'only', 'just', 'npm', 'harness',
   ].flatMap((p) => p.split(/[\s-]+/));
   const FUNCTION_WORDS = new Set(['no', 'not', 'nothing', 'a', 'did', 'to']);
   const hits = banned.filter((w) => outcome.VOCABULARY.has(w) && !FUNCTION_WORDS.has(w));

@@ -171,30 +171,30 @@ const PHRASES = Object.freeze({
 const VOCABULARY = Object.freeze(new Set(`
 a an the this that these those it its they them their there here which what who when where while and or but
 nor so then also both either each every all any some several many more most other another same no not none
-nothing only just even again once twice first last next before after during until within of to from in into
-inside outside on onto at by for with without through via under over about between than as is are was were be
-been being has have had did one two three four five six seven eight nine ten zero package
-packages dependency dependencies script scripts hook hooks harness entry point points module modules code
-process processes child children shell command commands file files path paths directory directories folder
-folders system home working work temporary tmp area areas tree own credential credentials key keys token
-tokens socket sockets docker environment variable variables env name names network dns lookup lookups query
-queries host hosts hostname hostnames address addresses ip port ports connection connections request requests
-response responses http https tls tcp udp sni method methods header headers body bodies
-payload payloads byte bytes data chunked plaintext raw text sinkhole sandbox sandboxes container containers
-tracer trace traces kernel syscall syscalls instrumentation time times limit limits clock wall memory pids
-pid cpu second seconds minute minutes runs ran running observation observations attempt attempts attempted
-attempting tried trying write writes wrote written writing read reads reading open opens opened opening
-creates created creating deletes deleted deleting removes removed removing renamed changed modified access
-accesses accessed accessing listed counted looked looking checked spawns spawned spawning starts started
-starting launched executed executing calls called calling loads loaded loading required resolved resolving
-connects connected connecting contacted sends sent sending fetched downloaded answered answers refused
-blocked denied failed failure succeeded end ended stopped killed exceed exceeded reached hit hits recorded
-observed logged caught predicted prediction predictions matched mismatch mismatched differed model rule rules
-fired marker markers completeness complete incomplete missing heartbeat binary binaries node npm external
-internal local remote public private readonly read-only permission permissions error errors exit
-exits status signal signals fork forks loop loops infinite bomb part parts step steps phase phases lifecycle
-new old large small long short few single multiple different like activity destroyed afterwards analysis made makes making received receives touched touches
-events event below carrying carried carries went
+nothing even again once twice first last next before after during until within of to from in into inside
+outside on onto at by for with without through via under over about between than as is are was were be been
+being has have had did one two three four five six seven eight nine ten zero package packages dependency
+dependencies script scripts hook hooks entry point points module modules code process processes child
+children shell command commands file files path paths directory directories folder folders system home
+working work temporary tmp area areas tree own credential credentials key keys token tokens socket sockets
+docker environment variable variables env name names network dns lookup lookups query queries host hosts
+hostname hostnames address addresses ip port ports connection connections request requests response responses
+http https tls tcp udp sni method methods header headers body bodies payload payloads byte bytes data chunked
+plaintext raw text sinkhole sandbox sandboxes container containers tracer trace traces kernel syscall
+syscalls instrumentation time times limit limits clock wall memory pids pid cpu second seconds minute minutes
+runs ran running observation observations attempt attempts attempted attempting tried trying write writes
+wrote written writing read reads reading open opens opened opening creates created creating deletes deleted
+deleting removes removed removing renamed changed modified access accesses accessed accessing listed counted
+looked looking checked spawns spawned spawning starts started starting launched executed executing calls
+called calling loads loaded loading required resolved resolving connects connected connecting contacted sends
+sent sending fetched downloaded answered answers refused blocked denied failed succeeded end ended stopped
+killed exceed exceeded reached hit hits recorded observed logged caught predicted prediction predictions
+matched mismatch mismatched differed model rule rules fired marker markers completeness complete incomplete
+missing heartbeat binary binaries node external internal local remote public private readonly read-only
+permission permissions exit exits status signal signals fork forks loop loops infinite bomb part parts step
+steps phase phases lifecycle new old large small long short few single multiple different like activity
+destroyed afterwards analysis made makes making received receives touched touches events event below carrying
+carried carries went
 `.trim().split(/\s+/)));
 
 const ZERO_WIDTH = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
