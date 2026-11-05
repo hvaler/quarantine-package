@@ -168,10 +168,13 @@ mention or HTML in your PR comment. Set `QP_PUBLIC_URL` (for example `https://qp
 
 **SARIF.** There is one rule per verdict rule `a` to `i`, and one result per rule that fired. All results take
 the level of the **verdict**: `error` for `do-not-install` and `warning` for `review`. So a `do-not-install`
-receipt can have `review`-tier rules reported as `error`, and an `install` receipt has no results. Each result is
-located at the analysed package's `package.json`, because GitHub code scanning requires a location for every
-result ([SARIF support for code scanning](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning)).
-The output is validated against the OASIS SARIF 2.1.0 JSON schema in the unit tests.
+receipt can have `review`-tier rules reported as `error`, and an `install` receipt has no results. Each message
+names its rule's own tier (`Rule (f), tier review, fired for …`). Each result is located at the analysed package's
+`package.json`, because GitHub code scanning requires a location for every result
+([SARIF support for code scanning](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning)).
+The unit tests validate the output against the OASIS SARIF 2.1.0 errata01 JSON schema, vendored under
+`test/vendor/` with its sha256. The validator is a small draft-04 validator in the same folder, so the tests need
+no network and no dependency.
 
 **CLI.** `node src/cli.js analyse <spec> --format json|md|sarif` writes that form to stdout and still writes the
 receipt file. `node src/cli.js export <receipt.json> --format json|md|sarif` converts a stored receipt.
@@ -225,6 +228,9 @@ descriptive vocabulary of about 400 words: files, network, processes, limits, pr
 advice, judgement or verdict word. "install" is allowed only in "install script", "install hook" and similar.
 So "you can add it", "nothing to worry about" or "the rules overreacted" fail in any wording, and so does any
 quoted path or host name. The prompt tells the model to describe those generically.
+
+HTTP method names are accepted only before "request", as in "a GET request". When the verdict is not `install`,
+any negation (no, not, nothing, none, without) also fails, because it could play down what fired.
 
 The receipt records which text was used and why (`outcomeExplanation.source` and `guard.reason`). With
 `QP_MODEL_OFF=1` the template is always used. `verdict.js` never reads this field, and a unit test checks that.

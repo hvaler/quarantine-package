@@ -173,13 +173,13 @@ a an the this that these those it its they them their there here which what who 
 nor so then also both either each every all any some several many more most other another same no not none
 nothing only just even again once twice first last next before after during until within of to from in into
 inside outside on onto at by for with without through via under over about between than as is are was were be
-been being has have had do does did done one two three four five six seven eight nine ten zero package
+been being has have had did one two three four five six seven eight nine ten zero package
 packages dependency dependencies script scripts hook hooks harness entry point points module modules code
 process processes child children shell command commands file files path paths directory directories folder
 folders system home working work temporary tmp area areas tree own credential credentials key keys token
 tokens socket sockets docker environment variable variables env name names network dns lookup lookups query
 queries host hosts hostname hostnames address addresses ip port ports connection connections request requests
-response responses http https tls tcp udp sni post get put patch method methods header headers body bodies
+response responses http https tls tcp udp sni method methods header headers body bodies
 payload payloads byte bytes data chunked plaintext raw text sinkhole sandbox sandboxes container containers
 tracer trace traces kernel syscall syscalls instrumentation time times limit limits clock wall memory pids
 pid cpu second seconds minute minutes runs ran running observation observations attempt attempts attempted
@@ -191,10 +191,10 @@ connects connected connecting contacted sends sent sending fetched downloaded an
 blocked denied failed failure succeeded end ended stopped killed exceed exceeded reached hit hits recorded
 observed logged caught predicted prediction predictions matched mismatch mismatched differed model rule rules
 fired marker markers completeness complete incomplete missing heartbeat binary binaries node npm external
-internal local remote public private sensitive readonly read-only permission permissions error errors exit
+internal local remote public private readonly read-only permission permissions error errors exit
 exits status signal signals fork forks loop loops infinite bomb part parts step steps phase phases lifecycle
 new old large small long short few single multiple different like activity destroyed afterwards analysis made makes making received receives touched touches
-events event
+events event below
 `.trim().split(/\s+/)));
 
 const ZERO_WIDTH = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
@@ -256,8 +256,8 @@ function unknownWords(norm) {
   t = loosen(t);
   t = t.replace(/\brules?\s+((?:\(?[a-i]1?\)?(?:\s*(?:,|&|\band\b|\bor\b)\s*|\s+))*\(?[a-i]1?\)?)(?![a-z0-9])/g, ' rule ');
   t = t.replace(/\(([a-i])1?\)/g, ' ');
-  // "run" only as a noun after a determiner ("the run", "each run"), never as a bare verb.
-  t = t.replace(/\b(the|this|that|each|every|one|first|second|same|a) (runs?)\b/g, '$1');
+  // HTTP method names only as "<METHOD> request(s)" (never as verbs such as "get it").
+  t = t.replace(/\b(?:get|post|put|patch|head) (requests?)\b/g, '$1');
   const words = t.match(/[a-z0-9]+/g) || [];
   return [...new Set(words.filter((w) => !/^[0-9]+$/.test(w) && !VOCABULARY.has(w)))];
 }
@@ -298,13 +298,19 @@ function guard(text, { verdict, firedRules }) {
   // Allowlist: any word outside the descriptive vocabulary (advice, judgement, verdict
   // synonyms, other languages, spelled-out tricks, quoted package strings) fails.
   if (unknownWords(norm).length) return { ok: false, reason: 'vocabulary' };
+
+  // When rules fired, a description has no reason to deny anything: any negation
+  // ("nothing sensitive", "no", "did not") could downplay what fired, so it fails.
+  if (verdict !== 'install' && NEGATION.test(loosen(norm))) return { ok: false, reason: 'negation' };
   return { ok: true };
 }
+
+const NEGATION = /\b(?:no|not|none|nothing|without|never|nor|neither)\b/;
 
 // ---------------------------------------------------------------- template
 
 const KIND_WORDS = Object.freeze({
-  'fs-write': 'file write attempt', 'fs-access': 'sensitive file access attempt', 'net-dns': 'DNS lookup',
+  'fs-write': 'file write attempt', 'fs-access': 'credential or socket access attempt', 'net-dns': 'DNS lookup',
   'net-tcp': 'TCP connection attempt', 'net-udp': 'UDP attempt', spawn: 'child process',
 });
 
@@ -316,7 +322,8 @@ function template(receipt) {
   for (const o of receipt.observations || []) if (o.actor !== 'npm' && KIND_WORDS[o.kind]) counts[o.kind] = (counts[o.kind] || 0) + 1;
   const parts = Object.entries(counts).map(([k, n]) => `${n} ${KIND_WORDS[k]}${n === 1 ? '' : (KIND_WORDS[k].endsWith('s') ? 'es' : 's')}`);
   // The verdict itself is shown just above this text, so the template does not restate it.
-  const s1 = parts.length ? `The sandbox recorded ${parts.join(', ')} by the package.` : 'The sandbox recorded no file, network or process activity by the package.';
+  const s1 = parts.length ? `The sandbox recorded ${parts.join(', ')} by the package.`
+    : letters.length ? 'The rules fired on the observations listed below.' : 'The sandbox recorded no file, network or process activity by the package.';
   const s2 = letters.length ? `Rules ${letters.map((l) => `(${l})`).join(', ')} fired.` : 'No rule fired.';
   const s3 = 'The sandbox was destroyed afterwards.';
   return [s1, s2, s3].join(' ');

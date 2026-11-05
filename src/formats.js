@@ -175,7 +175,8 @@ function toSarif(rc, { baseUrl = '' } = {}) {
       ruleId: l,
       ruleIndex: RULE_LETTERS.indexOf(l),
       level,
-      message: { text: capText(`Rule (${l}) fired for ${pkg.name || 'the package'}@${pkg.version || '?'} (${n} observation${n === 1 ? '' : 's'}): ${ruleByLetter(l).text}. Verdict: ${rc.verdict}.${links ? ` Receipt: ${links.page}` : ''}`, 600) },
+      // DEC-D6-11: the message names the rule's own tier; the level follows the verdict.
+      message: { text: capText(`Rule (${l}), tier ${ruleByLetter(l).tier}, fired for ${pkg.name || 'the package'}@${pkg.version || '?'} (${n} observation${n === 1 ? '' : 's'}): ${ruleByLetter(l).text}. Verdict: ${rc.verdict}.${links ? ` Receipt: ${links.page}` : ''}`, 600) },
       locations: [{ physicalLocation: { artifactLocation: { uri: 'package.json' }, region: { startLine: 1 } } }],
       partialFingerprints: { quarantinePackage: capText(`${pkg.name || ''}@${pkg.version || ''}/${l}`, 300) },
       properties: { verdict: rc.verdict, receiptId: rc.taskId || null, observationIds: (r.observationIds || []).slice(0, 50) },

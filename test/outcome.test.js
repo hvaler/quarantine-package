@@ -73,7 +73,7 @@ test('E2c (iii): a rule letter that did not fire is rejected, in every form', ()
   assert.deepEqual(g('Rule (i) fired.', 'review', ['f']), { ok: false, reason: 'rule-not-fired' });
   assert.deepEqual(g('Rule a fired.', 'review', ['f']), { ok: false, reason: 'rule-not-fired' });
   // letters that fired pass; the article "a" and words containing letters do not count
-  assert.deepEqual(g('Rules (a) and (d) fired: a write and a POST.', 'do-not-install', ['a', 'd', 'f']), { ok: true });
+  assert.deepEqual(g('Rules (a) and (d) fired: a write and a POST request.', 'do-not-install', ['a', 'd', 'f']), { ok: true });
   assert.deepEqual(g('Rule c fired.', 'do-not-install', ['c1']), { ok: true });
   assert.deepEqual(g('It made a DNS lookup.', 'review', ['f']), { ok: true });
 });
@@ -181,6 +181,34 @@ const CONTRADICTIONS = [
   ['do-not-install', ['a'], 'The package only wrote to a system path, which is part of the normal install.'],
   ['review', ['f'], 'The DNS lookup was to a trusted host.'],
   ['install', [], 'The package tried to write to a system path; rule a should have fired.'],
+  // the adversary's paper probe P3 on ef995f0 (bypasses there)
+  ['do-not-install', ['a1'], 'You can add it to your project.'],
+  ['do-not-install', ['a1'], 'You may approve and merge it.'],
+  ['do-not-install', ['a1'], 'Feel free to depend on it.'],
+  ['do-not-install', ['a1'], 'The package poses no concern.'],
+  ['do-not-install', ['a1'], 'This looks good to merge.'],
+  ['do-not-install', ['a1'], 'Es seguro instalar este paquete.'],
+  ['do-not-install', ['a1'], 'Das Paket ist sicher, Sie koennen es installieren.'],
+  ['do-not-install', ['a1'], "Le paquet est sur, vous pouvez l'installer."],
+  ['do-not-install', ['a1'], 'Its behaviour is expected for a build tool and needs no action.'],
+  ['do-not-install', ['a1'], 'Unsafe? No.'],
+  ['do-not-install', ['a1'], 'Nothing in this run should stop you from using it.'],
+  ['do-not-install', ['a1'], 'The write to /etc was a false alarm.'],
+  ['do-not-install', ['a1'], 'Also rule-b fired.'],
+  ['do-not-install', ['a1'], 'Rules a-c fired.'],
+  ['do-not-install', ['a1'], 'The second rule fired as well.'],
+  ['review', ['c1'], 'You can add it to your project; it made one GET request.'],
+  ['review', ['c1'], 'The request looks routine and needs no follow-up.'],
+  ['review', ['c1'], 'Es seguro.'],
+  // the commit security review on cfb3b28 (dual-use verbs, run-noun stripping, negation)
+  ['do-not-install', ['a'], 'First run it.'],
+  ['do-not-install', ['a'], 'Each run it.'],
+  ['do-not-install', ['a'], 'Get it.'],
+  ['do-not-install', ['a'], 'Do it.'],
+  ['do-not-install', ['a'], 'Put it in the tree.'],
+  ['do-not-install', ['b'], 'The package touched nothing sensitive.'],
+  ['do-not-install', ['b'], 'The package touched no credential file.'],
+  ['review', ['f'], 'The package made a DNS lookup but no connection.'],
 ];
 
 test('E2c: every contradiction in the corpus is rejected', () => {
@@ -207,8 +235,9 @@ test('E2c: descriptive replies in the vocabulary pass', () => {
   const ok = [
     ['do-not-install', ['a', 'd', 'f'], 'The install script tried to write to a system path and sent a POST request with a small payload to an external host, which the sinkhole received.'],
     ['review', ['f'], 'The package made a DNS lookup to an external host, which the sinkhole answered.'],
+    ['review', ['f'], 'The install script sent a GET request to an external host, which the sinkhole answered.'],
     ['install', [], 'The package ran its install script and made no network or file attempts outside its folder.'],
-    ['do-not-install', ['e'], 'The install script started an infinite loop and the wall clock limit ended the run after 60 seconds.'],
+    ['do-not-install', ['e'], 'The install script started an infinite loop and the wall clock limit ended it after 60 seconds.'],
     ['do-not-install', ['a', 'b'], 'Rules (a) and (b) fired: the package tried to write to a system path and looked for the Docker socket.'],
   ];
   for (const [v, fired, t] of ok) assert.deepEqual(g(t, v, fired), { ok: true }, t);

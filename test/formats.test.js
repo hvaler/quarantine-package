@@ -129,7 +129,8 @@ test('F1b: SARIF has rules a..i, one result per fired rule, level per verdict, n
       assert.equal(r.level, want, id);
       assert.equal(run.tool.driver.rules[r.ruleIndex].id, r.ruleId);
       assert.equal(r.locations[0].physicalLocation.artifactLocation.uri, 'package.json');
-      assert.ok(r.message.text.length > 0);
+      const tier = rc.rulesFired.find((x) => x.id.charAt(0) === r.ruleId).tier;
+      assert.ok(r.message.text.startsWith(`Rule (${r.ruleId}), tier ${tier}, fired`), `DEC-D6-11 ${id}: ${r.message.text}`);
     }
   }
 });
