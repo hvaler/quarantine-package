@@ -101,7 +101,7 @@ async function twoRunCase(hbRun) {
         outcomeCalls.push(req);
         const f = fs.readdirSync(receiptsDir).filter((x) => x.endsWith('.json'));
         pendingBody = f.length === 1 ? fs.readFileSync(path.join(receiptsDir, f[0]), 'utf8') : null;
-        return { status: 'ok', latencyMs: 1, model: 'm', content: 'The install script tried to write to a system path, which was refused.' };
+        return { status: 'ok', latencyMs: 1, model: 'm', content: 'Rule (a) fired: the install script tried to write to a system path, which was refused.' };
       }
       sent.push(req);
       return sent.length === 1 ? reply(H1) : reply(H2);

@@ -12,6 +12,7 @@ const { decide } = require('../src/verdict');
 const PUB = path.join(__dirname, 'fixtures', 'public-receipts');
 const receipts = fs.readdirSync(PUB).filter((f) => /^[a-f0-9]{10}\.json$/.test(f)).map((f) => JSON.parse(fs.readFileSync(path.join(PUB, f), 'utf8')));
 const byVerdict = (v) => receipts.find((r) => r.verdict === v);
+const read8b = () => receipts.find((r) => r.taskId === '8b42cfb93e'); // do-not-install, rules a b d f g
 const DNI = byVerdict('do-not-install');
 const REV = byVerdict('review');
 const INS = byVerdict('install');
@@ -33,8 +34,8 @@ test('E2c (i): naming another verdict is rejected, for each verdict', () => {
   assert.deepEqual(g("Don't install it.", 'install', []), { ok: false, reason: 'other-verdict' });
   assert.deepEqual(g('A review is advised.', 'install', []), { ok: false, reason: 'other-verdict' });
   // the computed verdict itself, and neutral uses of "install", pass
-  assert.deepEqual(g('The install script tried to write to a system path.', 'do-not-install', ['a']), { ok: true });
-  assert.deepEqual(g('The install hook made a DNS lookup.', 'review', ['f']), { ok: true });
+  assert.deepEqual(g('Rule (a) fired: the install script tried to write to a system path.', 'do-not-install', ['a']), { ok: true });
+  assert.deepEqual(g('Rule (f) fired: the install hook made a DNS lookup.', 'review', ['f']), { ok: true });
   // naming even the computed verdict is not description: the allowlist rejects it
   assert.equal(g('The install script tried to write to a system path. Do not install it.', 'do-not-install', ['a']).ok, false);
 });
@@ -44,7 +45,7 @@ test('E2c (i): every phrase of the verdict tables is rejected under every other 
   for (const p of T.doNotInstall) for (const v of ['install', 'review']) assert.equal(g(`The package: ${p} now.`, v, []).ok, false, `${p} @ ${v}`);
   for (const p of T.review) for (const v of ['install', 'do-not-install']) assert.equal(g(`Result: ${p} now.`, v, []).ok, false, `${p} @ ${v}`);
   for (const p of T.install) for (const v of ['review', 'do-not-install']) assert.equal(g(`Result: ${p} now.`, v, []).ok, false, `${p} @ ${v}`);
-  for (const p of T.neutralInstall) assert.equal(g(`The ${p} wrote a file.`, 'do-not-install', ['a']).ok, true, p);
+  for (const p of T.neutralInstall) assert.equal(g(`Rule (a) fired: the ${p} wrote a file.`, 'do-not-install', ['a']).ok, true, p);
 });
 
 test('E2c (i): case, hyphens, curly quotes, spacing and look-alike forms do not slip through', () => {
@@ -75,7 +76,7 @@ test('E2c (iii): a rule letter that did not fire is rejected, in every form', ()
   // letters that fired pass; the article "a" and words containing letters do not count
   assert.deepEqual(g('Rules (a) and (d) fired: a write and a POST request.', 'do-not-install', ['a', 'd', 'f']), { ok: true });
   assert.deepEqual(g('Rule c fired.', 'do-not-install', ['c1']), { ok: true });
-  assert.deepEqual(g('It made a DNS lookup.', 'review', ['f']), { ok: true });
+  assert.deepEqual(g('Rule f fired: it made a DNS lookup.', 'review', ['f']), { ok: true });
 });
 
 // ---------------------------------------------------------------- (iv)
@@ -127,8 +128,9 @@ test('E2c: unreadable text (markup, links, line breaks, non-ASCII look-alikes) a
 });
 
 test('E2c: an accepted model text is stored with its source and the informational note', async () => {
-  const text = 'The install script tried to write outside its working directory and sent a POST request to an external host, which the sinkhole received.';
-  const oe = await outcome.explain({ receipt: DNI, send: async () => ({ status: 'ok', content: text, model: 'stub-model' }), cfg: ON });
+  const rc = read8b();
+  const text = 'Rules (a) and (d) fired: the install script tried to write outside its working directory and sent a POST request to an external host, which the sinkhole received.';
+  const oe = await outcome.explain({ receipt: rc, send: async () => ({ status: 'ok', content: text, model: 'stub-model' }), cfg: ON });
   assert.equal(oe.source, 'model stub-model');
   assert.equal(oe.text, text);
   assert.equal(oe.note, outcome.NOTE);
@@ -252,14 +254,25 @@ test('E2c: the vocabulary holds no verdict, judgement or advice word', () => {
 
 test('E2c: descriptive replies in the vocabulary pass', () => {
   const ok = [
-    ['do-not-install', ['a', 'd', 'f'], 'The install script tried to write to a system path and sent a POST request with a small payload to an external host, which the sinkhole received.'],
-    ['review', ['f'], 'The package made a DNS lookup to an external host, which the sinkhole answered.'],
-    ['review', ['f'], 'The install script sent a GET request to an external host, which the sinkhole answered.'],
+    ['do-not-install', ['a', 'd', 'f'], 'Rules (a) and (d) fired: the install script tried to write to a system path and sent a POST request with a small payload to an external host, which the sinkhole received.'],
+    ['review', ['f'], 'Rule (f) fired: the package made a DNS lookup to an external host, which the sinkhole answered.'],
+    ['review', ['f'], 'Rule f fired. The install script sent a GET request to an external host, which the sinkhole answered.'],
     ['install', [], 'The package ran its install script and made no network or file attempts outside its folder.'],
-    ['do-not-install', ['e'], 'The install script started an infinite loop and the wall clock limit ended it after 60 seconds.'],
+    ['do-not-install', ['e'], 'Rule (e) fired: the install script started an infinite loop and the wall clock limit ended it after 60 seconds.'],
     ['do-not-install', ['a', 'b'], 'Rules (a) and (b) fired: the package tried to write to a system path and looked for the Docker socket.'],
   ];
   for (const [v, fired, t] of ok) assert.deepEqual(g(t, v, fired), { ok: true }, t);
+});
+
+test('E2c (DEC-D6-14): a non-install reply must cite a fired rule; "but" is rejected', () => {
+  // descriptive and in the vocabulary, but anchored to no rule: template
+  assert.deepEqual(g('The package made a DNS lookup to an external host, which the sinkhole answered.', 'review', ['f']), { ok: false, reason: 'no-rule-cited' });
+  assert.deepEqual(g('The install script tried to write to a system path.', 'do-not-install', ['a']), { ok: false, reason: 'no-rule-cited' });
+  // install verdicts fire no rule, so nothing to cite
+  assert.deepEqual(g('The package loaded its entry module.', 'install', []), { ok: true });
+  // contrast words are out of the vocabulary
+  assert.equal(outcome.VOCABULARY.has('but'), false);
+  assert.deepEqual(g('Rule (a) fired, but the write was refused.', 'do-not-install', ['a']), { ok: false, reason: 'vocabulary' });
 });
 
 // ---------------------------------------------------------------- template

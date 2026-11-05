@@ -230,7 +230,12 @@ So "you can add it", "nothing to worry about" or "the rules overreacted" fail in
 quoted path or host name. The prompt tells the model to describe those generically.
 
 HTTP method names are accepted only before "request", as in "a GET request". When the verdict is not `install`,
-any negation (no, not, nothing, none, without) also fails, because it could play down what fired.
+two more checks apply:
+- any negation (no, not, nothing, none, without) fails, because it could play down what fired;
+- the reply must cite at least one rule that fired, for example `Rule (a) fired: …`, so it stays tied to the finding.
+
+The vocabulary also leaves out contrast words ("but"), minimisers ("only", "just"), "error", and "npm" and
+"harness", so the act cannot be moved off the package.
 
 The receipt records which text was used and why (`outcomeExplanation.source` and `guard.reason`). With
 `QP_MODEL_OFF=1` the template is always used. `verdict.js` never reads this field, and a unit test checks that.
