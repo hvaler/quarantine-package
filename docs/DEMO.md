@@ -18,6 +18,8 @@ really happened."
 **Screen:**
 - The progress page shows *queued*, then *running*, then the link to the receipt.
 - The receipt shows **Verdict: install**, with no rules fired.
+- Under the verdict: the **Markdown for a PR comment**, **Download JSON** and **SARIF** links (and **Copy for PR**),
+  then *What happened*, one informational paragraph written after the verdict (*model* or *code template*).
 - *Prediction vs observed:* network `false` / `false`, **match**.
 - *Sandbox destroyed: yes*.
 
@@ -48,6 +50,8 @@ while true; do curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" https://<
   `/collect` and the payload size. It never reached the internet, because the sandbox network ends at the
   sinkhole.
 - *Sandbox destroyed: yes: no container, network or volume of this task remains*.
+- Optional: click **Copy for PR** and paste into a pull request comment. It shows the same verdict, the rules
+  and the sinkhole summary, with no model text.
 
 **Say:** "This package tried to write system files, look for the Docker socket and send data out. All of it
 was blocked or caught, the data went only to our sinkhole, and the backend kept answering."

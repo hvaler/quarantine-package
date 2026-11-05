@@ -61,10 +61,19 @@ async function main(argv) {
         abortReason: receipt.abortReason || null, hostProbePass: receipt.hostProbe ? receipt.hostProbe.pass : undefined,
         receipt: receiptPath,
       };
-      if (format === 'json') process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
-      else if (format === 'md') process.stdout.write(formats.toMarkdown(receipt, { baseUrl: process.env.QP_PUBLIC_URL || '' }));
-      else if (format === 'sarif') process.stdout.write(`${JSON.stringify(formats.toSarif(receipt, { baseUrl: process.env.QP_PUBLIC_URL || '' }), null, 2)}\n`);
-      else console.log(JSON.stringify(summary));
+      if (format) {
+        // F1d + C7: every format comes from the STORED receipt (secret-scanned and, if
+        // needed, redacted when it was written), never from the in-memory object.
+        let stored;
+        try { stored = JSON.parse(require('node:fs').readFileSync(receiptPath, 'utf8')); } catch (_) { stored = null; }
+        if (!stored) { console.error('the stored receipt could not be read back'); return EXIT.infrastructure; }
+        const base = { baseUrl: process.env.QP_PUBLIC_URL || '' };
+        if (format === 'json') process.stdout.write(`${JSON.stringify(stored, null, 2)}\n`);
+        else if (format === 'md') process.stdout.write(formats.toMarkdown(stored, base));
+        else process.stdout.write(`${JSON.stringify(formats.toSarif(stored, base), null, 2)}\n`);
+        return exitFor(stored, exitCode);
+      }
+      console.log(JSON.stringify(summary));
       return exitFor(receipt, exitCode);
     }
     case 'export': {

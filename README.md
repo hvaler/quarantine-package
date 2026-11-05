@@ -40,6 +40,9 @@ For each request, the system does the following:
    check fails, the trace counts as incomplete and the verdict is at worst `review`.
 5. **Destroy.** Every container, network and volume of the task is removed. The receipt records that nothing
    is left.
+6. **Explain (informational).** A second model call describes what happened, from a summary built by code. A
+   fixed guard replaces any reply that contradicts the verdict with a sentence built by code
+   ([The two model texts](#the-two-model-texts)). The verdict is already written at this point.
 
 ## Vultr services used
 
@@ -146,6 +149,85 @@ on purpose. Measured on Vultr Serverless Inference (C11): the model answered for
 Receipts are written to `./receipts/<taskId>.json` (override with `QP_RECEIPTS_DIR`). Docker objects are named
 `ar-<QP_RUN_PREFIX>-<role>-<taskId>`.
 
+## Use the result
+
+Every receipt is available in four forms. All of them are built from the stored receipt only, so older receipts
+get them too, with no re-run.
+
+| Form | Where | What it is for |
+|---|---|---|
+| Page | `/r/<id>` | People. It has a **Copy for PR** button, a **Download JSON** link and links to the two forms below. |
+| JSON | `/api/receipts/<id>` | The full receipt: every observation, the sinkhole log, the limits and the teardown. |
+| Markdown | `/r/<id>.md` (`text/markdown`) | Pasting into a pull request comment. It lists the package and version, the verdict, each rule that fired, prediction vs observed, the sinkhole summary (host, method, path, bytes), "sandbox destroyed", the limitations that applied, and links to the page and the JSON. |
+| SARIF 2.1.0 | `/api/receipts/<id>.sarif` (`application/sarif+json`) | Code scanning tools. |
+
+The Markdown and SARIF forms contain **no model text**: they are deterministic. Every string the package controls
+(paths, host names, URL paths) is shown inside an inline code span, with control, bidi and zero-width characters
+written out as `\u{..}` and long strings cut. So a package cannot forge a verdict line, a link, an image, a
+mention or HTML in your PR comment. Set `QP_PUBLIC_URL` (for example `https://qp.example.com`) for absolute links.
+
+**SARIF.** There is one rule per verdict rule `a` to `i`, and one result per rule that fired. All results take
+the level of the **verdict**: `error` for `do-not-install` and `warning` for `review`. So a `do-not-install`
+receipt can have `review`-tier rules reported as `error`, and an `install` receipt has no results. Each result is
+located at the analysed package's `package.json`, because GitHub code scanning requires a location for every
+result ([SARIF support for code scanning](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning)).
+The output is validated against the OASIS SARIF 2.1.0 JSON schema in the unit tests.
+
+**CLI.** `node src/cli.js analyse <spec> --format json|md|sarif` writes that form to stdout and still writes the
+receipt file. `node src/cli.js export <receipt.json> --format json|md|sarif` converts a stored receipt.
+`analyse` and `export` both exit with the verdict:
+
+| Exit | Meaning |
+|---|---|
+| `0` | `install` |
+| `10` | `review` |
+| `20` | `do-not-install` |
+| `2` | usage error or invalid input (no verdict) |
+| `3` | aborted in the download phase, for example a non-registry dependency or a size limit (no verdict) |
+| `4` | infrastructure failure or tracer unavailable (no verdict) |
+| `130` | interrupted with Ctrl+C or `SIGTERM` (no verdict) |
+
+A GitHub Actions step that fails the job on `do-not-install`. This is an example only; the runner needs Docker
+and a clone of this repository with the images built.
+
+```yaml
+- name: Quarantine the new dependency
+  run: |
+    code=0; node src/cli.js analyse "lodash@4.17.21" --format md > qp.md || code=$?
+    cat qp.md >> "$GITHUB_STEP_SUMMARY"
+    if [ "$code" -eq 20 ]; then echo "::error::do-not-install"; exit 1; fi
+    if [ "$code" -ne 0 ] && [ "$code" -ne 10 ]; then exit "$code"; fi
+```
+
+### The two model texts
+
+The receipt page shows two texts written by the model. Neither one can change the verdict.
+
+- **Model's expectation before the run** is written before the sandbox runs, from the package metadata, README
+  and entry excerpts. It goes with the prediction and the harness.
+- **What happened (model, informational)** is written after the verdict is computed and the sandbox is destroyed.
+  It comes from a second Vultr Serverless Inference call. The model gets a summary built by code: the verdict, the
+  rules that fired, counts per observation kind, up to 8 representative observations, the sinkhole summary and
+  prediction vs observed. Every string the package controls is capped and passed as quoted data inside a delimited
+  JSON block that the prompt declares untrusted. The redactor runs on the input and the output.
+
+A fixed guard checks the reply. Any doubt replaces it with a sentence built by code from the receipt, labelled
+*code template*. The guard rejects a reply that:
+- names a verdict other than the computed one;
+- says or implies safe, harmless, clean, no risk and similar when the verdict is not `install`;
+- cites a rule letter that did not fire;
+- is longer than 4 sentences or 600 characters;
+- holds markup, links, line breaks or non-ASCII text after normalisation;
+- or comes from a call that failed or timed out (20 s).
+
+The receipt records which text was used and why (`outcomeExplanation.source` and `guard.reason`). With
+`QP_MODEL_OFF=1` the template is always used. `verdict.js` never reads this field, and a unit test checks that.
+
+The receipt with the verdict is written first, with `outcomeExplanation.status: "pending"`. The call then runs,
+and the receipt file is replaced atomically with the result. The web job finishes when the CLI exits, so the job
+page links to the final receipt. If the CLI is interrupted during the call, the receipt keeps the verdict and stays
+`pending`. Receipts made before this feature have no such field and render as before.
+
 ## Default limits
 
 | Phase | Limit |
@@ -197,6 +279,7 @@ Every receipt lists these in `knownLimitations`.
 | L-17 | Large dependency trees (over 50 MB unpacked or 300 packages, for example `@stellar/stellar-sdk`) are aborted at download with no verdict. The limits fit a 4 GB VM and are configurable. |
 | L-18 | The receipt page shows at most 300 observations and 200 sinkhole entries. When it cuts a list, it says "showing N of M" and links to the full receipt JSON at `/api/receipts/<id>`. |
 | L-19 | **Fixed** (S6, commits e3edf74..265f148; the fix is complete at 265f148, e3edf74 alone was rejected in review). The tracer missed file syscalls outside its hand-written list (`utimensat`, `fchownat`, `readlink`, `inotify_add_watch` and others), so a package whose only forbidden acts used them got `install`. The traced set is now strace 6.1's whole `%file` class (minus `getcwd`) plus the fd-only file calls, every traced call has a mapping or fails closed, and a unit test checks both against an independent reference list ([`docs/TRACE-SET.md`](docs/TRACE-SET.md)). |
+| L-20 | The "What happened" guard is lexical: it checks fixed English phrase lists and rule-letter forms. It fails closed, so a correct reply is sometimes replaced by the code template. A reply that passes can still be odd or incomplete; it is labelled informational and never affects the verdict, the Markdown or the SARIF. If the CLI is interrupted during the call, the receipt stays `pending`. |
 | H-1 | **Done.** The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
