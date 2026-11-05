@@ -203,3 +203,13 @@ The exec identity (`exe`) keeps its lexical resolution, so roles and instrumenta
    - `/proc/<x>/task/<tid>/{fd/N,root,cwd}` are followed.
    - Walking past another procfs magic link (`exe`, `map_files/*` or `ns/*`) is unresolved.
 3. **A lookup never creates another process's fd table.** A foreign pid with no table yet is unknown.
+
+### Padded short lines (found in the implementer's adv7 pre-check on 10e3d056)
+
+strace pads short calls to a column, for example `dup2(17, 1)       = 1` and `close(5)          = 0`.
+
+**The bug:** `splitCall` only recognised `) = `, so every padded line had no return value. This predates S6.
+- At a075bd1 it made, for example, a short successful `chdir("/tmp")` an "outcome unknown" chdir, which was fail-closed.
+- With the fd table it dropped `dup2` and `dup` results. The adversary's adv7-benign2 (a spawn with a /work file as stdout) then got do-not-install a:3.
+
+**The fix:** the separator is now `)` + spaces + `= `. A test covers it with verbatim lines from that production trace.

@@ -204,3 +204,22 @@ test('security review 2: link budget, /proc/<pid>/task/<tid>/fd, other procfs li
   assert.ok(ids(run(['mkdir("/proc/self/exe/../x", 0777) = -1 ENOTDIR (Not a directory)']).d).has('a'));
   assert.ok(ids(run(['chmod("/proc/99/fd/3", 0600) = -1 ENOENT (No such file or directory)']).d).has('a'));
 });
+
+test('padded short lines carry their return value (verbatim, impl6s task 4e8a6e28f2, image s1-10e3d056): spawn stdio fd is /work, not unknown', () => {
+  // These four lines are copied verbatim from that production trace (pids renumbered
+  // into this test's process tree: 53 -> 40, 60 -> 47). strace pads short calls.
+  const r = run([
+    'openat(AT_FDCWD</work/node_modules/adv7-benign2>, "/work/c/out.txt", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 17',
+    'clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7a430896bf90) = 47',
+    [47, 'dup2(17, 1)       = 1'],
+    [47, 'execve("/usr/local/bin/node", ["/usr/local/bin/node", "-e", "x"], 0x0 /* 0 vars */) = 0'],
+    [47, 'fchmod(1, 0644)   = 0'],
+    [47, 'utimensat(1, NULL, [{tv_sec=0, tv_nsec=0}, {tv_sec=0, tv_nsec=0}], 0) = 0'],
+  ]);
+  assert.ok(clean(r), writes(r.ob).join(', '));
+  const { splitCall } = require('../src/trace');
+  assert.equal(splitCall('dup2(17, 1)       = 1').ret, 1);
+  assert.equal(splitCall('close(5)          = 0').ret, 0);
+  assert.equal(splitCall('chdir("/tmp")                     = 0').ret, 0);
+  assert.equal(splitCall('fchmod(1, 0644)   = -1 EPERM (Operation not permitted)').errno, 'EPERM');
+});

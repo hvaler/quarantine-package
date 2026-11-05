@@ -14,10 +14,15 @@ function splitCall(text) {
   if (open <= 0) return null;
   const name = text.slice(0, open);
   if (!/^[a-z0-9_]+$/.test(name)) return null;
-  const eq = text.lastIndexOf(') = ');
+  // S6 repair 1: strace pads short calls to a column ("dup2(17, 1)       = 1",
+  // "close(5)          = 0"), so the separator is ")" + spaces + "= ". Before this,
+  // a padded line had no return value (ret null).
+  let eq = -1;
+  let sepLen = 0;
+  for (const m of text.matchAll(/\) +=(?= )/g)) { eq = m.index; sepLen = m[0].length; }
   if (eq < 0) return { name, args: text.slice(open + 1), ret: null, errno: null };
   const args = text.slice(open + 1, eq);
-  const retPart = text.slice(eq + 4).trim();
+  const retPart = text.slice(eq + sepLen).trim();
   const m = /^(-?\d+|0x[0-9a-f]+|\?)(?:\s+([A-Z][A-Z0-9_]+))?/.exec(retPart);
   const ret = m ? (m[1] === '?' ? null : Number(m[1])) : null;
   return { name, args, ret, errno: m && m[2] ? m[2] : null };
