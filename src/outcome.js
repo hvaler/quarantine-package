@@ -436,7 +436,7 @@ function retryTokens(text, reason, receipt, summary) {
 }
 
 // S8: room for the model's reasoning tokens; the reply itself is capped by the guard (600 chars).
-const OUTCOME_MAX_TOKENS = 2000;
+const OUTCOME_MAX_OUT = 2000;
 const RETRY_MIN_MS = 3000; // the retry only starts if at least this much of the budget is left
 
 async function explain({ receipt, send, cfg, timeoutMs = OUTCOME_TIMEOUT_MS, logRejected = null }) {
@@ -456,7 +456,7 @@ async function explain({ receipt, send, cfg, timeoutMs = OUTCOME_TIMEOUT_MS, log
     const t0 = Date.now();
     let r;
     try {
-      const p = send({ baseUrl: cfg.baseUrl, model: cfg.model, messages: buildMessages(summary, retry), maxTokens: OUTCOME_MAX_TOKENS, timeoutMs: left });
+      const p = send({ baseUrl: cfg.baseUrl, model: cfg.model, messages: buildMessages(summary, retry), maxTokens: OUTCOME_MAX_OUT, timeoutMs: left });
       let timer;
       const limit = new Promise((resolve) => { timer = setTimeout(() => resolve({ status: 'timeout' }), left + 500); });
       r = await Promise.race([p, limit]);
@@ -494,4 +494,4 @@ function pending() {
 
 const SYSTEM_PROMPT = systemPrompt();
 
-module.exports = { S8_ADDITIONS, S8_REMOVALS, OUTCOME_MAX_TOKENS, REJECTED_LOG_CAP, rejectionRecord, retryTokens, packageStrings, RETRY_MIN_MS, CAPS, OUTCOME_TIMEOUT_MS, PHRASES, VOCABULARY, unknownWords, RULE_LETTERS, NOTE, TEMPLATE_NOTE, SYSTEM_PROMPT, buildSummary, buildMessages, guard, citedRules, countSentences, normalise, template, explain, pending };
+module.exports = { S8_ADDITIONS, S8_REMOVALS, OUTCOME_MAX_OUT, REJECTED_LOG_CAP, rejectionRecord, retryTokens, packageStrings, RETRY_MIN_MS, CAPS, OUTCOME_TIMEOUT_MS, PHRASES, VOCABULARY, unknownWords, RULE_LETTERS, NOTE, TEMPLATE_NOTE, SYSTEM_PROMPT, buildSummary, buildMessages, guard, citedRules, countSentences, normalise, template, explain, pending };
