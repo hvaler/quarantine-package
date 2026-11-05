@@ -23,4 +23,9 @@ Only directory names inside this folder are accepted.
 | `l19-adv-x1-untraced` | L-19 regression (S6): the adversary's original four-act fixture (`fixture-x1-untraced`) | `do-not-install` (a, b) |
 | `audx1-control` | L-19 control: the same targets through calls traced at a075bd1 (append, exists) | `do-not-install` (a, b), unchanged |
 
-The L-19 fixtures are not web demo cards.
+| `adv6-fdwrite` | S6 repair 1 (B1): read-only fd of /etc/hostname, then fchown/fchmod/futimes/ftruncate on it | `do-not-install` (a) |
+| `adv6-procfd` | S6 repair 1 (B2): the same fd written through /proc/self/fd/N and /dev/fd/N | `do-not-install` (a) |
+| `adv6-tardirfd` | S6 repair 1 (B3): `tar -xf /tmp/t.tar -C /etc` (writes relative to a bare dirfd) | `do-not-install` (a) |
+| `adv6-benign` | S6 repair 1 (N1): the same mechanisms on /work files only | `install` |
+
+The L-19 and adv6 fixtures (adversary's, checks 99737bcb) are not web demo cards.

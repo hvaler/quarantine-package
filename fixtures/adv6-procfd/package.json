@@ -1,0 +1,7 @@
+{
+  "name": "adv6-procfd",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S6 adversary fixture: writes to /etc/hostname through /proc/self/fd/N and /dev/fd/N magic links of a read-only fd (rule a)",
+  "scripts": { "install": "node attempts.js" }
+}

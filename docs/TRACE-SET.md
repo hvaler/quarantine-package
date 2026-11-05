@@ -7,7 +7,7 @@ This file records the evidence for the tracer's `-e trace=` set in
 
 At a075bd1 the set was a hand-written list of 44 names. File syscalls outside it produced no record, so a package whose only forbidden acts used them got `install` (L-19). Examples are `utimensat`, `fchownat`, `readlink` and `inotify_add_watch`.
 
-The S6 set has 88 names, all listed explicitly:
+The S6 set had 88 names in d949e7de (94 after repair 1, see below), all listed explicitly:
 
 | Group | Names |
 |---|---|
@@ -113,3 +113,53 @@ Measured on the implementer's working-tree build, end-to-end CLI wall time, `QP_
 | express@4.21.2 | 32.3 s | 30.5 s |
 
 No measurable slowdown. The loop and forkbomb verdicts are unchanged: do-not-install, rule e.
+
+## Repair 1 (after review 1 of d949e7de): the fd table
+
+**Root fact.** The production tracer prints no `-y` annotation for a numeric fd. The adversary counted 0 `N</…>` annotations across 11 production traces, and the auditor confirmed it. `AT_FDCWD</…>` is annotated about 10,000 times per trace.
+- The tracer container runs as uid 0 with `--cap-drop ALL --cap-add SYS_PTRACE`.
+- Reading the target of `/proc/<pid>/cwd` needs only ptrace access. Traversing `/proc/<pid>/fd` (mode 0500, owned by uid 10001) needs DAC override, which the tracer lacks. That is the adversary's reasoned cause; I did not verify it separately.
+- The `17</work/x>` example in handoff 1 was **not** produced by the production tracer. It came from a one-off probe:
+  - `docker run --rm qp-sandbox:impl6-wip sh -c "strace -f -y ... node -e ..."`;
+  - strace ran inside the sandbox image, as uid 10001, tracing its own child;
+  - the same uid can read its own child's `/proc/<pid>/fd`.
+- That probe proved the annotation format, not that the shipped tracer produces it. This was a gap in my evidence.
+
+**Fix.** `src/trace.js` keeps its own fd table per thread group, independent of `-y`. An annotation is still used when one is present.
+
+How the table is filled:
+- The return values of open, openat, openat2 and creat (resolved path, or unknown) and of socket (not a file).
+- Copy on `dup`, `dup2`, `dup3` and `fcntl(F_DUPFD[_CLOEXEC])`.
+- Forget on `close`.
+- `close_range` forgets, or only marks the entries with `CLOSE_RANGE_CLOEXEC`.
+- `fcntl(F_SETFD)` sets the cloexec flag.
+- A successful exec drops the cloexec entries.
+
+How it is inherited:
+- A fork, vfork or clone without `CLONE_FILES` copies the parent's table at the clone return, or at the child's first call if the child's lines come first.
+- Threads share the table of their thread group.
+- `CLONE_FILES` without `CLONE_THREAD` makes both sides' tables unknown for the whole trace (fail closed).
+- Pid 1 starts with fds 0–2 as stdio, which is not a file.
+- close, close_range, dup, dup2, dup3 and fcntl are added to the traced set (94 names). The guard test checks that each one is mapped.
+
+How it is used:
+- **B1:** an fd-only call takes its path from the table.
+  - An unknown fd: a write attempt, successful or failed, is an unresolved write, so rule a fires.
+  - EBADF is not recorded.
+  - A read or probe through an unknown fd is not recorded. Getting an fd to a credential file needs a traced open, which already fires rule b.
+- **B2:** `/proc/{self,thread-self,<pid>}/fd/N[/…]`, `/dev/fd/N[/…]` and `/dev/std{in,out,err}` resolve through the table (the named process's table for `<pid>`).
+  - A non-file fd is a sink.
+  - An unknown fd is unresolved.
+  - `observe.js` no longer skips `/dev/fd`, `/proc/self/fd` or `/proc/thread-self/fd` as device sinks. It still skips `/dev/null`, `/dev/tty`, `/dev/stdout` and `/dev/stderr`.
+- **B3:** a bare numeric dirfd (`mkdirat(4, "qpdir")`) resolves through the table. Unknown or non-file means unresolved, never the cwd.
+- **Hardening:** `/proc/<x>/cwd/…` with an unknown cwd, or another pid's cwd, is unresolved instead of the literal path.
+
+**Not done (should-fix):** using the `AT_FDCWD</path>` annotation as the base when the tracked cwd is unknown.
+- In a printed annotation, `[^>]*` stops at the first `>`. A directory name containing `>` would therefore give a shorter, wrong base path.
+- Trusting that text could turn today's unresolved (fail-closed) case into a resolved, allowed path.
+- The unknown-cwd case stays unresolved.
+
+**Verbatim tests.** `test/fdtable-s6.test.js` replays slices of the adversary's production traces: tasks 94c5fbb68f, 016cefc2ca, 9770eb7388 and 89c84b384a, from checks 99737bcb, on images `qp-sandbox:adv6-d949e7d`.
+- The slices are in `test/fixtures/prod-traces/`, and no line is edited.
+- On d949e7de these slices give no rule a for B1–B3, and a:2 for N1.
+- On the repair they give rule a for B1–B3 (on `/etc/hostname` and `/etc/qpdir`), and no file rule for N1.

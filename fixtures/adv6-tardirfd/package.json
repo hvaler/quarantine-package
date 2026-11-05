@@ -1,0 +1,7 @@
+{
+  "name": "adv6-tardirfd",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S6 adversary fixture: tar -C /etc extracts through a dirfd strace -y does not annotate (rule a)",
+  "scripts": { "install": "node attempts.js" }
+}

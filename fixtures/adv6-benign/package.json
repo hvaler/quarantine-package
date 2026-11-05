@@ -1,0 +1,7 @@
+{
+  "name": "adv6-benign",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S6 adversary fixture: benign /work fd writes (tar extract, fchmod, futimes, ftruncate, statfs, watch): install expected",
+  "scripts": { "install": "node attempts.js" }
+}

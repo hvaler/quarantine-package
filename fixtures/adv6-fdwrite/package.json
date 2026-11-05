@@ -1,0 +1,7 @@
+{
+  "name": "adv6-fdwrite",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S6 adversary fixture: fd-only metadata writes on an fd opened read-only outside /work (rule a)",
+  "scripts": { "install": "node attempts.js" }
+}

@@ -6,7 +6,10 @@ const { analyse } = require('./trace');
 const { DOCKER_SOCKETS, CREDENTIAL_PATHS, KEY_LIKE } = require('./verdict');
 
 const NPM_CLI_PATHS = ['/usr/local/bin/npm', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
-const DEVICE_SINKS =['/dev/null', '/dev/tty', '/dev/stdout', '/dev/stderr', '/dev/fd', '/proc/self/fd', '/proc/thread-self/fd'];
+// Repair 1 (B2): /dev/fd, /proc/self/fd and /proc/thread-self/fd are no longer
+// skipped here: trace.js resolves fd aliases through its fd table (a non-file fd
+// is dropped there; an unknown one is an unresolved write).
+const DEVICE_SINKS = ['/dev/null', '/dev/tty', '/dev/stdout', '/dev/stderr'];
 const MAX_ALLOWED_AREA_WRITES = 200;
 const MAX_SPAWNS = 50;
 

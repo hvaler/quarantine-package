@@ -33,12 +33,20 @@ function quotedStrings(args) {
 // `AT_FDCWD, "x"` -> base 'cwd'; `3</home/qp>, "x"` -> base '/home/qp'.
 function pathArgs(args) {
   const out = [];
-  const re = /(?:(AT_FDCWD|\d+<([^>]*)>),\s*)?"((?:[^"\\]|\\.)*)"(\.\.\.)?/g;
+  // S6 repair 1 (B3): a bare numeric dirfd ("mkdirat(4, ...)": the production
+  // tracer cannot annotate numeric fds) is never the cwd. Its base is null and
+  // dirfd carries the number, which analyse() resolves through its fd table.
+  // AT_FDCWD, annotated ("AT_FDCWD</work>") or not, is the tracked cwd.
+  const re = /(?:(AT_FDCWD(?:<[^>]*>)?|(\d+)(?:<([^>]*)>)?),\s*)?"((?:[^"\\]|\\.)*)"(\.\.\.)?/g;
   let m;
   while ((m = re.exec(args))) {
-    const str = m[4] ? null : m[3].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    const base = m[1] === undefined ? 'cwd' : m[1] === 'AT_FDCWD' ? 'cwd' : (m[2] && m[2].startsWith('/') ? m[2] : null);
-    out.push({ str, base });
+    const str = m[5] ? null : m[4].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    let base;
+    let dirfd;
+    if (m[1] === undefined || m[1].startsWith('AT_FDCWD')) base = 'cwd';
+    else if (m[3] !== undefined && m[3].startsWith('/')) base = m[3];
+    else { base = null; if (m[3] === undefined) dirfd = Number(m[2]); }
+    out.push(dirfd === undefined ? { str, base } : { str, base, dirfd });
   }
   return out;
 }
@@ -129,6 +137,9 @@ function normalize(p, cwd) {
   if (parts[0] === 'proc' && parts[2] === 'cwd' && /^(self|thread-self)$/.test(parts[1] || '') && cwd) {
     return normalize(`${cwd}/${parts.slice(3).join('/')}`, null);
   }
+  // S6 repair 1: any other /proc/<x>/cwd/... (unknown cwd, or another pid's cwd)
+  // cannot be read lexically: unresolved (null), never the literal /proc path.
+  if (parts[0] === 'proc' && parts[2] === 'cwd' && /^(self|thread-self|\d+)$/.test(parts[1] || '')) return null;
   return `/${parts.join('/')}`;
 }
 
@@ -206,12 +217,13 @@ const FS_SYSCALLS = Object.freeze({
 // file calls traced before S6). Together with FS_SYSCALLS this is the mapped set.
 const LEGACY_SYSCALLS = Object.freeze([
   'clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'chdir', 'fchdir', 'getcwd',
+  'close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl',
   'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg',
   'openat', 'open', 'openat2', 'creat', 'mkdir', 'mkdirat', 'truncate', 'chmod', 'fchmodat',
   'unlink', 'unlinkat', 'rmdir', 'rename', 'renameat', 'renameat2', 'link', 'linkat',
   'symlink', 'symlinkat', 'access', 'faccessat', 'faccessat2', 'newfstatat', 'statx', 'stat', 'lstat',
 ]);
-const NOT_FILE_CALLS = new Set(['clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg']);
+const NOT_FILE_CALLS = new Set(['close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl', 'clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg']);
 const MAPPED_SYSCALLS = Object.freeze(new Set([...LEGACY_SYSCALLS, ...Object.keys(FS_SYSCALLS)]));
 
 // The path behind an fd as strace -y prints it ("3</etc/passwd>"), or why there is none.
@@ -298,6 +310,58 @@ function analyse(text, opts = {}) {
       fsShared.add(x.ret);
     }
   }
+  // ---- S6 repair 1 (B1/B2/B3/N1): fd table, independent of strace -y.
+  // The production tracer (uid 0, cap-drop ALL + SYS_PTRACE) cannot read
+  // /proc/<pid>/fd, so strace -y annotates AT_FDCWD but never a numeric fd.
+  // Per thread group: fd -> { k: 'path', path } | { k: 'nonpath' }, with a cloexec
+  // flag. Filled from open/openat/openat2/creat/socket returns; close, close_range,
+  // dup, dup2, dup3 and fcntl(F_DUPFD*, F_SETFD) are traced to keep it exact. A
+  // fork/vfork/clone without CLONE_FILES copies the parent's table; a successful
+  // exec drops the cloexec entries. Pid 1 starts with fds 0-2 as stdio (non-file).
+  // An fd with no entry is UNKNOWN: a write through it (fd-only call, dirfd, or a
+  // /proc/<pid>/fd/N or /dev/fd/N path) is an unresolved write (rule a).
+  const parentOf = new Map(); // child tgid -> parent tgid (non-thread clones), whole trace
+  const filesShared = new Set(); // both sides of a CLONE_FILES non-thread clone: table unknowable
+  for (const x of calls) {
+    if (!/^(clone|clone3|fork|vfork)$/.test(x.name) || !(x.ret > 0) || /CLONE_THREAD/.test(x.args)) continue;
+    if (!parentOf.has(x.ret)) parentOf.set(x.ret, leader(x.pid));
+    if (/CLONE_FILES/.test(x.args)) { filesShared.add(leader(x.pid)); filesShared.add(x.ret); }
+  }
+  const fdTables = new Map();
+  const copyTable = (t) => new Map([...t].map(([fd, e]) => [fd, { ...e }]));
+  const tableOf = (pid, depth = 0) => {
+    const key = leader(pid);
+    if (filesShared.has(key)) return null;
+    if (fdTables.has(key)) return fdTables.get(key);
+    let t;
+    if (key === 1) t = new Map([0, 1, 2].map((fd) => [fd, { k: 'nonpath', cloexec: false }]));
+    else if (parentOf.has(key) && depth < 64) { const pt = tableOf(parentOf.get(key), depth + 1); t = pt ? copyTable(pt) : new Map(); }
+    else t = new Map();
+    fdTables.set(key, t);
+    return t;
+  };
+  const fdEntry = (pid, fd) => {
+    if (!Number.isInteger(fd) || fd < 0) return { k: 'unknown' };
+    const t = tableOf(pid);
+    return (t && t.get(fd)) || { k: 'unknown' };
+  };
+  const fdSet = (pid, fd, e) => { const t = tableOf(pid); if (t && Number.isInteger(fd) && fd >= 0) { if (e) t.set(fd, e); else t.delete(fd); } };
+  // /proc/{self,thread-self,<pid>}/fd/N[/rest], /dev/fd/N[/rest] and /dev/std{in,out,err}
+  // name an open fd: resolve them through the table. Returns null when the path is
+  // not such an alias, { sink: true } for a non-file fd, { path } (null = unknown).
+  const fdAlias = (pid, path) => {
+    if (typeof path !== 'string') return null;
+    let m = /^\/(?:proc\/(self|thread-self|\d+)\/fd|dev\/fd)\/(\d+)(\/.*)?$/.exec(path);
+    let who; let fd; let rest = '';
+    if (m) { who = m[1] === undefined || m[1] === 'self' || m[1] === 'thread-self' ? pid : Number(m[1]); fd = Number(m[2]); rest = m[3] || ''; }
+    else if ((m = /^\/dev\/std(in|out|err)$/.exec(path))) { who = pid; fd = { in: 0, out: 1, err: 2 }[m[1]]; }
+    else return null;
+    const e = fdEntry(who, fd);
+    if (e.k === 'nonpath') return rest ? { path: null } : { sink: true };
+    if (e.k === 'path') return { path: normalize(`${e.path}${rest}`) };
+    return { path: null };
+  };
+  const dropCloexec = (pid) => { const t = tableOf(pid); if (t) for (const [fd, e] of [...t]) if (e.cloexec) t.delete(fd); };
   for (let ci = 0; ci < calls.length; ci++) {
     const c = calls[ci];
     const p = tg(c.pid);
@@ -327,6 +391,10 @@ function analyse(text, opts = {}) {
             const raced = otherThreadChdir(c.pid) || cwdChanges.some((d) => d.pid !== c.pid && d.pid !== child && (!tgid.has(d.pid) || tg(d.pid) === p) && d.entry <= c.exit && d.exit >= c.entry);
             if (!ownCwd.has(child)) cwd.set(child, raced ? null : cwd.get(p));
             if (fsShared.has(child)) cwd.set(child, null);
+            // Repair 1: the child's fd table is the parent's at the clone return,
+            // unless the child already acted (its table was then copied at its
+            // first call, from the parent's table at that point).
+            tableOf(child);
             if (!seen.has(child)) {
               if (exe.has(p)) { exe.set(child, exe.get(p)); exeFromOwnExec.delete(child); }
               if (argv.has(p)) argv.set(child, argv.get(p));
@@ -362,6 +430,7 @@ function analyse(text, opts = {}) {
           // traced), so the instrumentation marker always fails for it.
           exe.set(p, '(execveat)');
           argv.set(p, []);
+          dropCloexec(c.pid);
           events.push({ ...base, type: 'exec', path: '(execveat)', rawPath: c.args.slice(0, 120), argv: [], envp: null, opaque: true });
         }
         break;
@@ -391,6 +460,7 @@ function analyse(text, opts = {}) {
           exe.set(p, path);
           exeFromOwnExec.add(p);
           argv.set(p, av);
+          dropCloexec(c.pid);
           events.push({ ...base, type: 'exec', path, rawPath: rawExe, argv: av, envp, viaLink });
         }
         break;
@@ -417,7 +487,55 @@ function analyse(text, opts = {}) {
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
       }
+      case 'close': {
+        // Repair 1: the fd is gone whatever close returned (Linux frees it even on EINTR).
+        const fd = Number(/^\s*(\d+)/.exec(c.args)?.[1]);
+        fdSet(c.pid, fd, null);
+        break;
+      }
+      case 'close_range': {
+        // close_range(first, last|~0U, flags): CLOSE_RANGE_CLOEXEC only marks them.
+        if (c.ret === 0) {
+          const m = /^\s*(\d+),\s*(\d+|~0U?|4294967295|0xffffffff)/.exec(c.args);
+          const t = tableOf(c.pid);
+          if (m && t) {
+            const lo = Number(m[1]);
+            const hi = /^\d+$/.test(m[2]) ? Number(m[2]) : Infinity;
+            for (const fd of [...t.keys()]) {
+              if (fd < lo || fd > hi) continue;
+              if (/CLOSE_RANGE_CLOEXEC/.test(c.args)) t.get(fd).cloexec = true; else t.delete(fd);
+            }
+          } else if (!m && t) {
+            for (const fd of [...t.keys()]) t.delete(fd); // unparsable: forget all (unknown, fail closed)
+          }
+        }
+        break;
+      }
+      case 'dup': case 'dup2': case 'dup3': {
+        // dup(old) = new; dup2(old, new) = new; dup3(old, new, O_CLOEXEC) = new.
+        if (typeof c.ret === 'number' && c.ret >= 0) {
+          const old = Number(/^\s*(\d+)/.exec(c.args)?.[1]);
+          const e = fdEntry(c.pid, old);
+          fdSet(c.pid, c.ret, e.k === 'unknown' ? null : { ...e, cloexec: c.name === 'dup3' && /O_CLOEXEC/.test(c.args) });
+        }
+        break;
+      }
+      case 'fcntl': {
+        const m = /^\s*(\d+),\s*(F_[A-Z_]+)/.exec(c.args);
+        if (!m) break;
+        if (/^F_DUPFD/.test(m[2]) && typeof c.ret === 'number' && c.ret >= 0) {
+          const e = fdEntry(c.pid, Number(m[1]));
+          fdSet(c.pid, c.ret, e.k === 'unknown' ? null : { ...e, cloexec: m[2] === 'F_DUPFD_CLOEXEC' });
+        } else if (m[2] === 'F_SETFD' && c.ret === 0) {
+          const t = tableOf(c.pid);
+          const e = t && t.get(Number(m[1]));
+          if (e) e.cloexec = /FD_CLOEXEC/.test(c.args.slice(m[0].length));
+        }
+        break;
+      }
       case 'socket': {
+        // Repair 1: a socket fd is not a file.
+        if (typeof c.ret === 'number' && c.ret >= 0) fdSet(c.pid, c.ret, { k: 'nonpath', cloexec: /SOCK_CLOEXEC/.test(c.args) });
         if (c.ret >= 0) {
           const type = /SOCK_DGRAM/.test(c.args) ? 'dgram' : /SOCK_STREAM/.test(c.args) ? 'stream' : 'other';
           const fam = /AF_INET6/.test(c.args) ? 'inet6' : /AF_INET/.test(c.args) ? 'inet' : /AF_UNIX|AF_LOCAL/.test(c.args) ? 'unix' : 'other';
@@ -472,12 +590,33 @@ function analyse(text, opts = {}) {
         const args = pathArgs(c.args);
         // Resolve a path argument against its dirfd (strace -y) or the cwd.
         // Truncated strings and unknown dirfds give null: unresolved, never trusted.
+        // The directory a relative path is resolved against: the cwd, an annotated
+        // dirfd, or (repair 1, B3) a bare numeric dirfd looked up in the fd table.
+        // Unknown or non-file dirfd: null (unresolved), never the cwd.
+        const dirOf = (a) => {
+          if (a.base === 'cwd') return cwd.get(p);
+          if (a.base !== null) return a.base;
+          if (a.dirfd === undefined) return null;
+          const e = fdEntry(p, a.dirfd);
+          return e.k === 'path' ? e.path : null;
+        };
+        // Repair 1 (B2): a path that names an open fd (/proc/<pid>/fd/N, /dev/fd/N,
+        // /dev/std*) is the fd's file; a non-file fd is a sink; unknown is null.
+        const viaFd = (full, raw) => {
+          if (full === null) return { path: null, raw };
+          const alias = fdAlias(p, full);
+          if (!alias) return null;
+          return alias.sink ? { path: null, raw, sink: true } : { path: alias.path, raw };
+        };
         const at = (i) => {
           const a = args[i];
           if (!a || a.str === null) return { path: null, raw: a ? a.str : null };
-          if (a.str.startsWith('/')) return { path: canonical(normalize(a.str, cwd.get(p))), raw: a.str };
-          const dir = a.base === 'cwd' ? cwd.get(p) : a.base;
-          return { path: dir ? canonical(normalize(`${dir}/${a.str}`, cwd.get(p))) : null, raw: a.str };
+          const dir = a.str.startsWith('/') ? '' : dirOf(a);
+          if (dir === null || dir === undefined) return { path: null, raw: a.str };
+          const full = normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p));
+          const fdr = viaFd(full, a.str);
+          if (fdr) return fdr;
+          return { path: canonical(full), raw: a.str };
         };
         // Calls that act on the final path component itself (unlink, rmdir,
         // rename, link, symlink, lstat) do not follow it: resolve the parent
@@ -485,9 +624,14 @@ function analyse(text, opts = {}) {
         const nofollow = (i) => {
           const a = args[i];
           if (!a || a.str === null) return { path: null, raw: a ? a.str : null };
-          const dir = a.str.startsWith('/') ? '' : (a.base === 'cwd' ? cwd.get(p) : a.base);
+          const dir = a.str.startsWith('/') ? '' : dirOf(a);
           if (dir === null || dir === undefined) return { path: null, raw: a.str };
           const full = normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p));
+          if (full === null) return { path: null, raw: a.str };
+          // An fd alias as the last component is still resolved (fail closed: the
+          // kernel follows the magic link for chmod/chown/utimes/truncate/open).
+          const fdr = viaFd(full, a.str);
+          if (fdr) return fdr;
           const cut = full.lastIndexOf('/');
           const parent = cut <= 0 ? '/' : canonical(full.slice(0, cut));
           return { path: normalize(`${parent}/${full.slice(cut + 1)}`), raw: a.str };
@@ -496,12 +640,19 @@ function analyse(text, opts = {}) {
         // (either side of a rename), so a stale mapping can never name a later file.
         const forget = (r) => { if (r.path) { for (const l of [...links.keys()]) if (l === r.path || l.startsWith(`${r.path}/`)) links.delete(l); } };
         const blocked = c.ret === -1;
-        const push = (type, r, extra = {}) => events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra });
-        if (c.name === 'openat' || c.name === 'open' || c.name === 'openat2') {
+        const push = (type, r, extra = {}) => { if (!r.sink) events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra }); };
+        if (c.name === 'openat' || c.name === 'open' || c.name === 'openat2' || c.name === 'creat') {
           // openat2 prints its flags inside the how struct ({flags=O_WRONLY|O_CREAT, ...}).
           // RESOLVE_IN_ROOT/BENEATH only confine the lookup, so the path read here is
           // the widest one the call could reach (fail closed).
-          push(WRITE_FLAGS.test(c.args) ? 'fs-write' : 'fs-read', at(0));
+          const r = at(0);
+          push(c.name === 'creat' || WRITE_FLAGS.test(c.args) ? 'fs-write' : 'fs-read', r);
+          // Repair 1: the returned fd names this file (or a non-file, for a sink
+          // such as /dev/stdout reopened); an unresolved path leaves it unknown.
+          if (typeof c.ret === 'number' && c.ret >= 0) {
+            const cloexec = /O_CLOEXEC/.test(c.args);
+            fdSet(c.pid, c.ret, r.sink ? { k: 'nonpath', cloexec } : r.path ? { k: 'path', path: r.path, cloexec } : null);
+          }
         } else if (/^(unlink|unlinkat|rmdir)$/.test(c.name)) {
           const r = nofollow(0);
           push('fs-write', r);
@@ -537,11 +688,20 @@ function analyse(text, opts = {}) {
           const noFollowFlag = /AT_SYMLINK_NOFOLLOW/.test(c.args);
           const fromFd = (text) => {
             const a = fdAnnotation(text);
-            if (a.kind === 'path') return { r: { path: a.path, raw: a.path } };
+            if (a.kind === 'path' && a.path) return { r: { path: a.path, raw: a.path } };
             if (a.kind === 'nonpath') return null; // pipe, socket, anon inode, memfd: not a file
-            // No annotation: a failed call (EBADF) acted on nothing; a successful
-            // write on an fd whose path is unknown is unresolved (fail closed).
-            return kind === 'write' && c.ret !== null && c.ret >= 0 ? { r: { path: null, raw: null } } : null;
+            // Repair 1 (B1/N1): the production tracer prints no annotation for a
+            // numeric fd, so the fd table names the file.
+            const fdm = /^\s*(\d+)/.exec(text);
+            const e = fdm ? fdEntry(p, Number(fdm[1])) : { k: 'unknown' };
+            if (e.k === 'path') return { r: { path: e.path, raw: `fd ${fdm[1]}` } };
+            if (e.k === 'nonpath') return null;
+            // Unknown fd. EBADF: no fd, nothing was acted on. A write attempt,
+            // successful or failed, is an unresolved write (rule a, fail closed).
+            // A read or probe through an unknown fd is not recorded: getting an fd
+            // to a credential file needs an open the tracer sees (rule b there).
+            if (c.errno === 'EBADF') return null;
+            return kind === 'write' ? { r: { path: null, raw: fdm ? `fd ${fdm[1]}` : null } } : null;
           };
           let target = null;
           if (form === 'fd') {
