@@ -218,3 +218,9 @@ test('S6: chdir into a credential directory alone is an access (rule b, A7)', ()
   assert.ok(fired(verdictOf('chdir("/home/qp/.ssh") = 0').d).has('b'));
   assert.ok(clean(verdictOf('chdir("/work/node_modules/pkg") = 0')));
 });
+
+test('S6 repair 1: the fd-table calls stay in trace.sh (close, close_range, dup, dup2, dup3, fcntl, unshare)', () => {
+  const set = tracedSet();
+  const missing = ['close', 'close_range', 'dup', 'dup2', 'dup3', 'fcntl', 'unshare'].filter((n) => !set.has(n));
+  assert.deepEqual(missing, [], `fd-table calls not traced: ${missing.join(', ')}`);
+});

@@ -269,3 +269,10 @@ test('security review 3: an uncertain rename keeps the link at both names; flag 
   const s = run(['symlink("/home/qp/.ssh", "/tmp/s1") = 0', 'newfstatat(AT_FDCWD</work/AT_SYMLINK_NOFOLLOW>, "/tmp/s1", 0x7ffd0000, 0) = 0']);
   assert.ok(ids(s.d).has('b'));
 });
+
+test('auditor gaps: a name touched by an uncertain rename is unresolved when walked forward; a symlink at an unresolvable path poisons ".."', () => {
+  const v = run(['rename("/tmp/k1", "/tmp/k2") = ?', 'openat(AT_FDCWD</work>, "/tmp/k2/id_rsa", O_RDONLY) = -1 ENOENT (No such file or directory)']);
+  assert.equal(v.ob.observations.find((o) => o.kind === 'completeness' && o.marker === 'paths-resolved').ok, false);
+  const w = run(['symlinkat("/usr/local/lib/node_modules/npm", 9, "l") = 0', 'mkdir("/tmp/x/../y", 0777) = 0']);
+  assert.ok(writes(w.ob).includes('mkdir unresolved:/tmp/x/../y'), writes(w.ob).join(', '));
+});
