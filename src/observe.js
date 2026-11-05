@@ -132,7 +132,9 @@ function build({ traceText, sinkholeText, stdoutText, nonce, limits = [], sandbo
   const isProcEnviron = (p) => typeof p === 'string' && /(^|\/)environ$/.test(p) && /(^|\/)proc(\/|$)/.test(p);
   const seenAccess = new Set();
   const unresolvedAccess = [];
-  for (const e of tr.events.filter((x) => x.type === 'fs-read' || x.type === 'fs-stat' || x.type === 'fs-write' || x.type === 'net-unix' || x.type === 'fs-link-target')) {
+  // fs-probe (S6/L-19): readlink, statfs, *getxattr, *listxattr, name_to_handle_at,
+  // inotify and fanotify watches.
+  for (const e of tr.events.filter((x) => x.type === 'fs-read' || x.type === 'fs-stat' || x.type === 'fs-probe' || x.type === 'fs-write' || x.type === 'net-unix' || x.type === 'fs-link-target')) {
     const actor = forRules(actorOf(e.pid));
     if (!COUNTED.has(actor)) continue;
     // A path the tracer could not resolve (truncated, unknown dirfd/cwd) cannot be

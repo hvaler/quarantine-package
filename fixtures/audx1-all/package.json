@@ -1,0 +1,9 @@
+{
+  "name": "qp-fixture-audx1-all",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Adversary test fixture (dispatch 4, X1). Never published. Only makes forbidden ATTEMPTS through syscalls absent from trace.sh's list; every attempt fails in the sandbox and nothing is sent anywhere.",
+  "main": "index.js",
+  "scripts": { "install": "node attempts.js" },
+  "license": "MIT"
+}

@@ -97,9 +97,12 @@ function parseLines(text) {
   }
   // A chdir/fchdir still unfinished when the trace ends may have taken effect:
   // keep it with an open interval and an unknown result (fail closed).
+  // S6: the same for a file call still unfinished at the end: it was attempted,
+  // and rules a and b count attempts (fail closed). Process and network calls keep
+  // their earlier handling.
   for (const [pid, p] of pending) {
     const c = splitCall(p.text);
-    if (c && (c.name === 'chdir' || c.name === 'fchdir')) calls.push({ pid, t: p.t, entry: p.entry, exit: Infinity, ...c, ret: null, errno: null });
+    if (c && (c.name === 'chdir' || c.name === 'fchdir' || !NOT_FILE_CALLS.has(c.name))) calls.push({ pid, t: p.t, entry: p.entry, exit: Infinity, ...c, ret: null, errno: null });
   }
   return calls;
 }
@@ -130,6 +133,97 @@ function normalize(p, cwd) {
 }
 
 const WRITE_FLAGS = /O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND/;
+
+// L-19 (S6): every file syscall the tracer records has an explicit kind here,
+// and test/trace-coverage.test.js checks the reference list against this table
+// and against trace.sh. kind: 'write' -> fs-write (rule a; also checked by rule b),
+// 'access' -> fs-probe (rule b). form says where the path is:
+//   path     first quoted path, cwd-relative       (e.g. chown("/etc/passwd", ...))
+//   lpath    same, but the last component is not followed (lchown, readlink, l*xattr)
+//   dirfd    dirfd + path; a NULL path means the dirfd itself (utimensat(fd, NULL) = futimens)
+//   ldirfd   dirfd + path, last component not followed (readlinkat, mknodat)
+//   fd       the fd's path from strace -y (fchown(3</etc/passwd>, ...))
+//   watch    inotify_add_watch(ifd, path): path is cwd-relative, the first fd is the inotify fd
+//   fanotify fanotify_mark(ffd, flags, mask, dirfd, path|NULL)
+//   opaque   no decodable path (mount fd + handle, or a syscall strace cannot name):
+//            an unresolved fs-write, so rule a fires (fail closed)
+// AT_SYMLINK_NOFOLLOW in the flags turns a following form into its nofollow variant.
+const FS_SYSCALLS = Object.freeze({
+  // writes and metadata changes
+  utime: { kind: 'write', form: 'path' },
+  utimes: { kind: 'write', form: 'path' },
+  utimensat: { kind: 'write', form: 'dirfd' },
+  futimesat: { kind: 'write', form: 'dirfd' },
+  chown: { kind: 'write', form: 'path' },
+  lchown: { kind: 'write', form: 'lpath' },
+  fchownat: { kind: 'write', form: 'dirfd' },
+  fchown: { kind: 'write', form: 'fd' },
+  fchmod: { kind: 'write', form: 'fd' },
+  fchmodat2: { kind: 'write', form: 'dirfd' },
+  ftruncate: { kind: 'write', form: 'fd' },
+  fallocate: { kind: 'write', form: 'fd' },
+  mknod: { kind: 'write', form: 'lpath' },
+  mknodat: { kind: 'write', form: 'ldirfd' },
+  setxattr: { kind: 'write', form: 'path' },
+  lsetxattr: { kind: 'write', form: 'lpath' },
+  fsetxattr: { kind: 'write', form: 'fd' },
+  removexattr: { kind: 'write', form: 'path' },
+  lremovexattr: { kind: 'write', form: 'lpath' },
+  fremovexattr: { kind: 'write', form: 'fd' },
+  // privileged path calls (cap-drop ALL: they fail, but an attempt counts)
+  chroot: { kind: 'write', form: 'path' },
+  acct: { kind: 'write', form: 'path' },
+  swapon: { kind: 'write', form: 'path' },
+  swapoff: { kind: 'write', form: 'path' },
+  uselib: { kind: 'write', form: 'path' },
+  quotactl: { kind: 'write', form: 'path' },
+  mount: { kind: 'write', form: 'opaque' },
+  umount2: { kind: 'write', form: 'path' },
+  pivot_root: { kind: 'write', form: 'path' },
+  open_tree: { kind: 'write', form: 'dirfd' },
+  move_mount: { kind: 'write', form: 'dirfd' },
+  fspick: { kind: 'write', form: 'dirfd' },
+  mount_setattr: { kind: 'write', form: 'dirfd' },
+  fsconfig: { kind: 'write', form: 'opaque' },
+  open_by_handle_at: { kind: 'write', form: 'opaque' },
+  // reads, probes and watches
+  readlink: { kind: 'access', form: 'lpath' },
+  readlinkat: { kind: 'access', form: 'ldirfd' },
+  statfs: { kind: 'access', form: 'path' },
+  fstatfs: { kind: 'access', form: 'fd' },
+  getxattr: { kind: 'access', form: 'path' },
+  lgetxattr: { kind: 'access', form: 'lpath' },
+  fgetxattr: { kind: 'access', form: 'fd' },
+  listxattr: { kind: 'access', form: 'path' },
+  llistxattr: { kind: 'access', form: 'lpath' },
+  flistxattr: { kind: 'access', form: 'fd' },
+  name_to_handle_at: { kind: 'access', form: 'dirfd' },
+  inotify_add_watch: { kind: 'access', form: 'watch' },
+  fanotify_mark: { kind: 'access', form: 'fanotify' },
+});
+
+// Syscalls analyse() handles in its own branches (process, cwd, network, and the
+// file calls traced before S6). Together with FS_SYSCALLS this is the mapped set.
+const LEGACY_SYSCALLS = Object.freeze([
+  'clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'chdir', 'fchdir', 'getcwd',
+  'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg',
+  'openat', 'open', 'openat2', 'creat', 'mkdir', 'mkdirat', 'truncate', 'chmod', 'fchmodat',
+  'unlink', 'unlinkat', 'rmdir', 'rename', 'renameat', 'renameat2', 'link', 'linkat',
+  'symlink', 'symlinkat', 'access', 'faccessat', 'faccessat2', 'newfstatat', 'statx', 'stat', 'lstat',
+]);
+const NOT_FILE_CALLS = new Set(['clone', 'clone3', 'fork', 'vfork', 'execve', 'execveat', 'socket', 'connect', 'bind', 'listen', 'sendto', 'sendmsg', 'sendmmsg']);
+const MAPPED_SYSCALLS = Object.freeze(new Set([...LEGACY_SYSCALLS, ...Object.keys(FS_SYSCALLS)]));
+
+// The path behind an fd as strace -y prints it ("3</etc/passwd>"), or why there is none.
+// Pipes, sockets, anon inodes and memfds are not filesystem paths.
+function fdAnnotation(text) {
+  const m = /^\s*(-?\d+)(?:<([^>]*)>)?/.exec(text);
+  if (!m) return { kind: 'none' };
+  if (m[2] === undefined) return { kind: 'none' };
+  const p = m[2].replace(/ \(deleted\)$/, '');
+  if (!p.startsWith('/') || p.startsWith('/memfd:')) return { kind: 'nonpath' };
+  return { kind: 'path', path: normalize(p) };
+}
 
 // Build process table and normalized events.
 function analyse(text, opts = {}) {
@@ -243,8 +337,25 @@ function analyse(text, opts = {}) {
         }
         break;
       }
+      case 'getcwd': {
+        // In strace's %file class but takes no path (it returns one): not an access.
+        // Not traced by trace.sh; kept explicit so a %file widening cannot turn it
+        // into an unmapped (fail-closed) write.
+        break;
+      }
       case 'execveat': {
         // fexecve / execveat: what runs is identified by an fd, not a checkable path.
+        // A10 (S6): the attempt is also an access of the dirfd + path it names
+        // ("" with AT_EMPTY_PATH = the fd itself). Unresolved -> paths-resolved fails.
+        {
+          const a = pathArgs(c.args)[0];
+          let r = null;
+          if (a && a.str !== null) {
+            const dir = a.str.startsWith('/') ? '' : (a.base === 'cwd' ? cwd.get(p) : a.base);
+            if (dir !== null && dir !== undefined) r = canonical(normalize(a.str.startsWith('/') ? a.str : `${dir}/${a.str}`, cwd.get(p)));
+          }
+          events.push({ ...base, type: 'fs-probe', path: r, rawPath: a ? a.str : null, unresolved: !r, blocked: c.ret === -1 });
+        }
         if (c.ret === 0) {
           // SR-3: the dirfd annotation is package-influenced text, so the argument
           // split is not trusted: envp is never taken from execveat (null = not
@@ -257,6 +368,12 @@ function analyse(text, opts = {}) {
       }
       case 'execve': {
         const { path: rawExe, argv: av, envp } = execArgs(c.args);
+        // A10 (S6, DEC-D5-6): an exec attempt is also an access of the path it
+        // names (spawn('/var/run/docker.sock') probes it), successful or not.
+        {
+          const r = typeof rawExe === 'string' ? resolvePath(cwd.get(p), rawExe) : null;
+          events.push({ ...base, type: 'fs-probe', path: r ? canonical(r) : null, rawPath: rawExe, unresolved: !r, blocked: c.ret === -1 });
+        }
         if (c.ret === 0) {
           // DEC-11r3: identify what was executed, not its name. The path is resolved
           // against the cwd and through every symlink created during the task.
@@ -279,6 +396,14 @@ function analyse(text, opts = {}) {
         break;
       }
       case 'chdir': {
+        // A7 (S6, DEC-D5-4): chdir also probes its target (ENOENT vs ENOTDIR vs
+        // success), so it is an access (rule b), attempted or not, resolved against
+        // the cwd before the call.
+        {
+          const raw = quotedStrings(c.args)[0];
+          const path = typeof raw === 'string' ? resolvePath(cwd.get(p), raw) : null;
+          events.push({ ...base, type: 'fs-probe', path: path ? canonical(path) : null, rawPath: raw ?? null, unresolved: !path, blocked: c.ret === -1 });
+        }
         if (c.ret === 0) { cwd.set(p, fsShared.has(p) ? null : resolvePath(cwd.get(p), quotedStrings(c.args)[0])); ownCwd.add(p); }
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
@@ -286,6 +411,8 @@ function analyse(text, opts = {}) {
       case 'fchdir': {
         // strace -y prints the directory behind the fd: fchdir(3</work/x>)
         const d = /^\d+<([^>]*)>/.exec(c.args);
+        // A7 (S6, DEC-D5-4): fchdir into a directory is an access of that directory.
+        if (d && d[1].startsWith('/')) events.push({ ...base, type: 'fs-probe', path: normalize(d[1]), rawPath: d[1], unresolved: false, blocked: c.ret === -1 });
         if (c.ret === 0) { cwd.set(p, d && d[1].startsWith('/') && !fsShared.has(p) ? normalize(d[1]) : null); ownCwd.add(p); }
         else if (c.ret === null) { cwd.set(p, null); ownCwd.add(p); } // outcome unknown: may have applied
         break;
@@ -370,7 +497,10 @@ function analyse(text, opts = {}) {
         const forget = (r) => { if (r.path) { for (const l of [...links.keys()]) if (l === r.path || l.startsWith(`${r.path}/`)) links.delete(l); } };
         const blocked = c.ret === -1;
         const push = (type, r, extra = {}) => events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra });
-        if (c.name === 'openat' || c.name === 'open') {
+        if (c.name === 'openat' || c.name === 'open' || c.name === 'openat2') {
+          // openat2 prints its flags inside the how struct ({flags=O_WRONLY|O_CREAT, ...}).
+          // RESOLVE_IN_ROOT/BENEATH only confine the lookup, so the path read here is
+          // the widest one the call could reach (fail closed).
           push(WRITE_FLAGS.test(c.args) ? 'fs-write' : 'fs-read', at(0));
         } else if (/^(unlink|unlinkat|rmdir)$/.test(c.name)) {
           const r = nofollow(0);
@@ -400,6 +530,52 @@ function analyse(text, opts = {}) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
           if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(c.args)) break;
           push('fs-stat', c.name === 'lstat' || /AT_SYMLINK_NOFOLLOW/.test(c.args) ? nofollow(0) : at(0));
+        } else if (FS_SYSCALLS[c.name]) {
+          // L-19 (S6): the calls added to the traced set.
+          const { kind, form } = FS_SYSCALLS[c.name];
+          const type = kind === 'write' ? 'fs-write' : 'fs-probe';
+          const noFollowFlag = /AT_SYMLINK_NOFOLLOW/.test(c.args);
+          const fromFd = (text) => {
+            const a = fdAnnotation(text);
+            if (a.kind === 'path') return { r: { path: a.path, raw: a.path } };
+            if (a.kind === 'nonpath') return null; // pipe, socket, anon inode, memfd: not a file
+            // No annotation: a failed call (EBADF) acted on nothing; a successful
+            // write on an fd whose path is unknown is unresolved (fail closed).
+            return kind === 'write' && c.ret !== null && c.ret >= 0 ? { r: { path: null, raw: null } } : null;
+          };
+          let target = null;
+          if (form === 'fd') {
+            target = fromFd(c.args);
+          } else if (form === 'path' || form === 'lpath') {
+            if (args.length) target = { r: form === 'lpath' ? nofollow(0) : at(0) };
+          } else if (form === 'dirfd' || form === 'ldirfd') {
+            if (args.length) {
+              target = { r: form === 'ldirfd' || noFollowFlag ? nofollow(0) : at(0) };
+            } else {
+              // A NULL path acts on the dirfd itself: utimensat(3</etc/hostname>, NULL, ...).
+              target = fromFd(c.args);
+            }
+          } else if (form === 'watch') {
+            // The first fd is the inotify instance, not a directory: the path is cwd-relative.
+            if (args.length) { args[0].base = 'cwd'; target = { r: at(0) }; }
+          } else if (form === 'fanotify') {
+            if (args.length) {
+              target = { r: /FAN_MARK_DONT_FOLLOW/.test(c.args) ? nofollow(0) : at(0) };
+            } else {
+              const d = /(\d+<[^>]*>),\s*NULL\s*$/.exec(c.args);
+              target = d ? fromFd(d[1]) : null;
+            }
+          } else {
+            target = { r: { path: null, raw: null } }; // opaque
+          }
+          if (target) push(type, target.r);
+        } else {
+          // Fail closed: a traced call with no mapping (a name added to trace.sh
+          // without one, a %file member this table does not know, or a syscall
+          // strace prints only by number) is an unresolved write: rule a fires.
+          // test/trace-coverage.test.js keeps every trace.sh name mapped, so this
+          // branch is reached only by calls the tables do not know.
+          push('fs-write', args.length ? at(0) : { path: null, raw: null }, { unmapped: true });
         }
       }
     }
@@ -408,4 +584,4 @@ function analyse(text, opts = {}) {
   return { calls: calls.length, tgid, parent, exe, argv, events };
 }
 
-module.exports = { analyse, parseLines, splitCall, quotedStrings, normalize, execArgs };
+module.exports = { analyse, parseLines, splitCall, quotedStrings, normalize, execArgs, FS_SYSCALLS, LEGACY_SYSCALLS, MAPPED_SYSCALLS };

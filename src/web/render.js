@@ -242,12 +242,30 @@ const HERO = {
   'do-not-install': ['bad', 'shieldX', 'Do not install'],
 };
 
+// L-18 (S6): the page shows at most 300 observations and 200 sinkhole entries.
+// When it truncates, a visible note gives the counts and links to the full JSON.
+// The link is built only from an id in the server's receipt-id format; anything
+// else gets the note without a link (no URL attribute from unchecked data).
+const MAX_OBS_SHOWN = 300;
+const MAX_SINK_SHOWN = 200;
+const RECEIPT_ID = /^[a-f0-9]{10}$/;
+function truncNote(shown, total, taskId) {
+  if (total <= shown) return '';
+  const id = String(taskId || '');
+  const where = RECEIPT_ID.test(id)
+    ? `<a href="/api/receipts/${id}">/api/receipts/${id}</a>`
+    : `/api/receipts/${esc(id)}`;
+  return `<p class="hint trunc">${icon('info')}<span>showing ${shown} of ${total}; full list in ${where}</span></p>`;
+}
+
 function receiptPage({ nonce, receipt }) {
   const r = receipt || {};
   const verdict = r.verdict || r.status || 'unknown';
   const [hcls, hicon, htext] = HERO[verdict] || ['neu', 'shieldDash', String(verdict)];
-  const obs = (r.observations || []).filter((o) => o.kind !== 'completeness').slice(0, 300);
-  const sink = (r.network && r.network.sinkholeLog || []).slice(0, 200);
+  const allObs = (r.observations || []).filter((o) => o.kind !== 'completeness');
+  const allSink = r.network && Array.isArray(r.network.sinkholeLog) ? r.network.sinkholeLog : [];
+  const obs = allObs.slice(0, MAX_OBS_SHOWN);
+  const sink = allSink.slice(0, MAX_SINK_SHOWN);
   const pvo = r.predictionVsObserved || [];
   const left = r.teardown && Array.isArray(r.teardown.leftoversForTask) ? r.teardown.leftoversForTask : null;
   const destroyed = left === null ? 'unknown' : left.length === 0 ? 'yes: no container, network or volume of this task remains' : `NO: ${left.join(', ')}`;
@@ -266,10 +284,10 @@ ${pkg.source === 'fixture' ? '<dt>Source</dt><dd>repo fixture, never published</
 ${counts.length ? `<div class="score">${counts.map(([s, n]) => badge(s, `${n} `)).join('')}</div>` : ''}
 ${pvo.length ? table(pvo, [['Dimension', (x) => x.dimension], ['Predicted', (x) => (x.predicted === null ? 'unknown' : String(x.predicted))], ['Observed', (x) => String(x.observed)], ['Result', (x) => badge(String(x.status)), { html: true }], ['Details', (x) => (x.observedDetail || []).join(', '), { cls: 'mono' }]]) : none('No prediction.')}</section>
 <section class="sec sink" aria-labelledby="s-h"><div class="sink-h"><h2 id="s-h">${icon('sink')}Sinkhole log</h2><p>Network attempts. Nothing left the sandbox.</p></div>
-${sink.length ? table(sink, [['Type', (x) => x.type], ['Destination', (x) => x.dstName || x.name || x.host || x.dstIp || '', { cls: 'mono' }], ['Port', (x) => x.dstPort || '', { cls: 'n mono' }], ['SNI', (x) => x.sni || '', { cls: 'mono' }], ['Method / path', (x) => [x.method, x.path].filter(Boolean).join(' '), { cls: 'mono' }], ['Payload bytes', (x) => (x.payloadBytes === undefined ? '' : x.payloadBytes), { cls: 'n mono' }]]) : none('No network attempt.')}</section>
+${truncNote(sink.length, allSink.length, r.taskId)}${sink.length ? table(sink, [['Type', (x) => x.type], ['Destination', (x) => x.dstName || x.name || x.host || x.dstIp || '', { cls: 'mono' }], ['Port', (x) => x.dstPort || '', { cls: 'n mono' }], ['SNI', (x) => x.sni || '', { cls: 'mono' }], ['Method / path', (x) => [x.method, x.path].filter(Boolean).join(' '), { cls: 'mono' }], ['Payload bytes', (x) => (x.payloadBytes === undefined ? '' : x.payloadBytes), { cls: 'n mono' }]]) : none('No network attempt.')}</section>
 <section class="sec" aria-labelledby="e-h"><h2 id="e-h">${icon('lines')}Explanation <span class="badge neu">model, informational</span></h2><pre>${esc(r.explanation && r.explanation.text ? r.explanation.text : 'none')}</pre>
 <p class="hint">Model status: ${esc(r.model ? r.model.status : 'none')}${r.model && r.model.missing && r.model.missing.length ? `; missing: ${esc(r.model.missing.join(', '))}` : ''}</p></section>
-<section class="sec" aria-labelledby="o-h"><h2 id="o-h">${icon('table')}Observations <span class="dim">${obs.length}</span></h2>${obs.length ? table(obs, [['Id', (x) => x.id, { cls: 'mono' }], ['Kind', (x) => x.kind, { cls: 'mono' }], ['Actor', (x) => x.actor, { cls: 'mono' }], ['Target', (x) => x.path || x.dest || x.name || (x.extra && x.extra.name) || '', { cls: 'mono' }], ['Blocked', blocked, { html: true }]]) : none('None.')}</section>
+<section class="sec" aria-labelledby="o-h"><h2 id="o-h">${icon('table')}Observations <span class="dim">${obs.length}</span></h2>${truncNote(obs.length, allObs.length, r.taskId)}${obs.length ? table(obs, [['Id', (x) => x.id, { cls: 'mono' }], ['Kind', (x) => x.kind, { cls: 'mono' }], ['Actor', (x) => x.actor, { cls: 'mono' }], ['Target', (x) => x.path || x.dest || x.name || (x.extra && x.extra.name) || '', { cls: 'mono' }], ['Blocked', blocked, { html: true }]]) : none('None.')}</section>
 <section class="sec" aria-labelledby="d-h"><h2 id="d-h">${icon('trash')}Sandbox destroyed</h2><p class="done${left && left.length ? ' no' : ''}">${icon(left && left.length ? 'x' : 'check')}<span>${esc(destroyed)}</span></p></section>
 <section class="sec" aria-label="Limits and known limitations">
 <details><summary>${icon('gauge')}Limits applied</summary><pre>${esc(JSON.stringify(r.limits || {}, null, 2))}</pre></details>

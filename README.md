@@ -68,6 +68,8 @@ Everything above runs on one Vultr VM. Only Caddy is exposed, on ports 80 and 44
 `127.0.0.1:8080`. The sandbox network is `--internal`, so it has no route to the internet: the sinkhole is the
 only place a package's traffic can reach.
 
+**Isolation: hardened Docker today; gVisor is future work.** The sandbox is hardened Docker (runc: read-only root, no capabilities, non-root, pids/memory/CPU and wall-clock limits) with a kernel-level strace backstop. Running it under gVisor (runsc) is future work: under runsc the package's system calls are served by gVisor's user-space kernel, not by the host kernel, so observation would have to move to gVisor's own trace points, and we have not yet verified that this keeps every observation the verdict needs.
+
 **Trust boundaries:**
 - **Untrusted:** packages and everything they print or write, and model output. These are only observed, escaped, and judged by fixed rules.
 - **Public surface:** only Caddy is reachable from the internet. The web app accepts a validated `name@version` or a demo id, and passes it to the CLI as argv, never through a shell. It has no admin or Docker route.
@@ -169,7 +171,8 @@ receipt only names the file. Lines that look like secrets are redacted, and `sca
 Every receipt lists these in `knownLimitations`.
 - **Fail-closed entries:** most entries can only make a verdict stricter: `review` or `do-not-install` for
   something benign.
-- **Two exceptions:** L-1 and L-13 can miss a key **read** that leaves no record.
+- **Two exceptions:** L-1 and L-13 can miss a key **read** that leaves no record. L-13 also covers a native addon
+  that uses a file syscall strace 6.1 cannot name (see its row).
   - The sandbox holds no secret values, which the C7 scan checks on every run.
   - Any attempt to send data out is still caught by the sinkhole and its rules.
   - What is lost is only the "tried to read a key" signal.
@@ -187,11 +190,13 @@ Every receipt lists these in `knownLimitations`.
 | L-9 | A `chdir` with an unknown outcome (killed mid-call, or still unfinished when the trace ends) is treated as applied, so the affected working directories become unresolved (fail closed). |
 | L-10 | **Fixed.** When a non-thread process is cloned with `CLONE_FS`, both it and its parent get an unresolved working directory for the whole trace, whatever the print order (fail closed). Only native code makes such clones. |
 | L-11 | `io_uring` is not traced. Node in the sandbox never uses it, and the default Docker seccomp profile denies it to native code. |
-| L-13 | A native addon (`.node`) loaded by the package can read env variables without leaving a record. Only the "tried to read a key" signal is lost. |
+| L-13 | A native addon (`.node`) loaded by the package can read env variables without leaving a record. Only the "tried to read a key" signal is lost. Extension (S6): native addon + syscalls strace 6.1 cannot name. The tracer's strace 6.1 cannot trace syscalls above 450 by name or number, so file calls added in newer kernels (`fchmodat2`, `setxattrat`/`getxattrat`/`listxattrat`/`removexattrat`, `open_tree_attr`, `file_getattr`/`file_setattr`) are not observed. glibc 2.36 has no wrappers for them and the image has no binary that uses them, so only a native addon can make them. |
 | L-14 | The web service user is in the `docker` group, which is root-equivalent, so a compromise of the web process would be a host compromise. Mitigations: no admin or Docker route, argv-only calls (never a shell), systemd hardening, and the app bound to 127.0.0.1 behind Caddy. Rootless Docker or a socket proxy is future work. |
 | L-15 | Test-only, not a product limitation. On a Linux host (such as the node 22 deploy VM), the preload's role check (H-1) demotes the test process, so the latch unit tests cannot detect a latch regression (S2j/S2k). Any change to `preload.cjs` or `harness.cjs` needs a unit run on a non-Linux host (the developer's node 24 run) plus the runtime S2 suite. |
 | L-16 | A package whose API keeps a native child process running (for example `esbuild`) can leave a completeness marker missing, which gives `review` for a benign package. Fail closed. |
 | L-17 | Large dependency trees (over 50 MB unpacked or 300 packages, for example `@stellar/stellar-sdk`) are aborted at download with no verdict. The limits fit a 4 GB VM and are configurable. |
+| L-18 | The receipt page shows at most 300 observations and 200 sinkhole entries. When it cuts a list, it says "showing N of M" and links to the full receipt JSON at `/api/receipts/<id>`. |
+| L-19 | **Fixed** (S6, commit SHA_L19). The tracer missed file syscalls outside its hand-written list (`utimensat`, `fchownat`, `readlink`, `inotify_add_watch` and others), so a package whose only forbidden acts used them got `install`. The traced set is now strace 6.1's whole `%file` class (minus `getcwd`) plus the fd-only file calls, every traced call has a mapping or fails closed, and a unit test checks both against an independent reference list ([`docs/TRACE-SET.md`](docs/TRACE-SET.md)). |
 | H-1 | **Done.** The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
