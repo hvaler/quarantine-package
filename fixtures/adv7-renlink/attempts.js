@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 // trace.js forgets a symlink on rename (from and to) and never records a hard link to a
 // symlink, so walk() treats the surviving symlink as a plain directory and pops ".." lexically.
 const fs = require('node:fs');

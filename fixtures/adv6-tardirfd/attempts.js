@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 const fs = require('node:fs');
 const cp = require('node:child_process');
 function step(label, fn) {

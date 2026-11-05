@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 // X1: forbidden attempts made only through syscalls that trace.sh does not trace at a075bd1.
 //   rule (a) write attempt outside /work,/tmp,HOME: utimensat (fs.utimesSync), fchownat (fs.chownSync)
 //   rule (b) access attempt to a credential path / docker.sock: readlink (fs.readlinkSync), inotify_add_watch (fs.watch)

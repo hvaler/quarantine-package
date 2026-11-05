@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 // C2 matrix: name resolution, direct-IP TCP, TLS with SNI on 443 and 8443.
 // No payload is sent: TLS stops at the ClientHello, TCP sends nothing.
 const dns = require('node:dns');

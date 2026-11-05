@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 // The kernel follows a symlink or a /proc/self/fd/N magic link and THEN applies "..".
 // trace.js normalize() collapses ".." lexically first, so the recorded path differs.
 const fs = require('node:fs');

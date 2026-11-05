@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 // Hostile-looking install script for the containment demo. Every step only
 // TRIES something and prints the outcome. Nothing is deleted, and the only
 // datum sent out is a count of env variables (no names, no values).

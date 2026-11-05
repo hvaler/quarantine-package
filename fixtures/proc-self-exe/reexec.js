@@ -1,4 +1,5 @@
 'use strict';
+if (!process.env.QP_TASK_NONCE) process.exit(0); // QP-FIXTURE-GUARD: a no-op outside the product sandbox
 // Uninstrumented node without naming it: /proc/self/exe with env {} (no NODE_OPTIONS).
 // Must never come out install (DEC-11r1/r3, SF-2).
 const { execFileSync } = require('node:child_process');
