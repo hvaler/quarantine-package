@@ -242,3 +242,8 @@ Directories made by `mkdir` stay resolvable, so ordinary task trees are not over
    - a link copies a known symlink to the new name;
    - a symlink is recorded.
    - Each of these also sets the untracked-links flag.
+
+### Automated security review of a6db84b9 (addressed)
+
+1. **Uncertain changes no longer copy or overwrite tracked links.** A rename, link or symlink with an unknown outcome marks the names involved as `ambiguous` and sets the untracked-links flag. `walk()` treats following or walking past an `ambiguous` name as unresolved, so it is fail closed and never resolved through a guessed mapping.
+2. **Flag text:** fd annotations (`AT_FDCWD<…>` and `N<…>`) are removed first, then quoted strings are blanked.

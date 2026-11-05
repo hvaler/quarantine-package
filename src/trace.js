@@ -406,11 +406,6 @@ function analyse(text, opts = {}) {
     if (!made.has(to) && !links.has(to)) made.set(to, 'unknown');
     if (exchange && !made.has(from) && !links.has(from)) made.set(from, 'unknown');
   };
-  const copyTree = (from, to) => {
-    for (const [k, v] of [...links]) if (under(k, from)) links.set(to + k.slice(from.length), v);
-    for (const [k, v] of [...made]) if (under(k, from)) made.set(to + k.slice(from.length), v);
-    if (!made.has(to) && !links.has(to)) made.set(to, 'unknown');
-  };
   // May cur be a link the tracer does not know? Only in a writable mount.
   const maybeUntrackedLink = (cur) => {
     if (!inWritable(cur)) return false;
@@ -465,6 +460,9 @@ function analyse(text, opts = {}) {
       // Other procfs magic links (exe, map_files/*, ns/*) are not followed here:
       // walking past one is unresolved (fail closed).
       if (!last && /^\/proc\/(self|thread-self|\d+)(?:\/task\/\d+)?\/(exe|map_files\/[^/]+|ns\/[^/]+)$/.test(cur)) return { path: null };
+      // A name touched by a rename/link/symlink of unknown outcome may or may not
+      // be a link: following it (or walking past it) is unresolved (fail closed).
+      if (made.get(cur) === 'ambiguous' && !(last && nofollowLast)) return { path: null };
       if (last && nofollowLast) break;
       // Task-created symlinks, then the image's directory symlinks.
       const target = links.has(cur) ? links.get(cur) : IMAGE_DIR_LINKS[cur];
@@ -746,7 +744,7 @@ function analyse(text, opts = {}) {
         const blocked = c.ret === -1;
         // Security review: flags are read from the arguments with quoted strings
         // blanked, so a path containing a flag name cannot flip a decision.
-        const fa = c.args.replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?/g, '""').replace(/<[^>]*>/g, '<>');
+        const fa = c.args.replace(/(AT_FDCWD|\b\d+)<[^>]*>/g, '$1').replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?/g, '""');
         // An unknown outcome (killed mid-call, unfinished at the end) may have applied.
         const uncertain = c.ret === null;
         const push = (type, r, extra = {}) => { if (!r.sink) events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra }); };
@@ -780,9 +778,10 @@ function analyse(text, opts = {}) {
           push('fs-write', from);
           // P2: a rename MOVES every link (and made-entry) at or under from to to.
           if (uncertain) {
-            // Both outcomes are possible: keep the entries at from and copy them to to.
+            // Both outcomes are possible: neither name can be followed reliably.
             untrackedLinks = true;
-            if (from.path && to.path) copyTree(from.path, to.path);
+            if (from.path) made.set(from.path, 'ambiguous');
+            if (to.path) made.set(to.path, 'ambiguous');
           } else if (!blocked) {
             if (from.path && to.path && (c.name === 'renameat2' || !/RENAME_EXCHANGE/.test(fa))) moveTree(from.path, to.path, c.name === 'renameat2' && /RENAME_EXCHANGE/.test(fa));
             else untrackedLinks = true;
@@ -795,8 +794,7 @@ function analyse(text, opts = {}) {
           // the new name is the same symlink.
           if (uncertain) {
             untrackedLinks = true;
-            const old = nofollow(0);
-            if (old.path && nw.path && links.has(old.path)) links.set(nw.path, links.get(old.path));
+            if (nw.path) made.set(nw.path, 'ambiguous');
           } else if (!blocked) {
             const old = nofollow(0);
             if (!old.path || !nw.path) untrackedLinks = true;
@@ -815,7 +813,8 @@ function analyse(text, opts = {}) {
           const tr = stored ? walk(p, stored, '/') : { path: null };
           const target = { path: tr.sink ? null : tr.path, raw };
           push('fs-link-target', target);
-          if ((c.ret === 0 || uncertain) && link.path && stored) { if (uncertain) untrackedLinks = true; links.set(link.path, stored); made.set(link.path, 'link'); }
+          if (uncertain) { untrackedLinks = true; if (link.path) made.set(link.path, 'ambiguous'); }
+          else if (c.ret === 0 && link.path && stored) { links.set(link.path, stored); made.set(link.path, 'link'); }
           else if (!blocked) untrackedLinks = true; // a link exists at a path we cannot name, or may (P2)
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
