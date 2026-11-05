@@ -137,6 +137,34 @@ test('G4: every addition is documented, none is banned, and "zero" is removed', 
   assert.deepEqual(outcome.guard('Rule (a) fired: the package wrote zero files outside its folder.', { verdict: 'do-not-install', firedRules: ['a'] }), { ok: false, reason: 'vocabulary' });
 });
 
+// ---------------------------------------------------------------- auditor mutant gaps on 0bb9e67
+test('G3 (R5): the retry gets only what is left of the shared budget, not a fresh one', async () => {
+  const seen = [];
+  const send = async (req) => {
+    seen.push(req.timeoutMs);
+    if (seen.length === 1) { await new Promise((r) => setTimeout(r, 1500)); return ok('Rules (a) and (d) fired: wobbling.'); }
+    return ok(GOOD);
+  };
+  const oe = await outcome.explain({ receipt: read(HOSTILE), send, cfg: ON, timeoutMs: 5000 });
+  assert.equal(seen.length, 2, 'retry made (more than RETRY_MIN_MS left)');
+  assert.ok(seen[0] <= 5000);
+  assert.ok(seen[1] <= 5000 - 1400, `retry timeout ${seen[1]} must be at most the remaining budget`);
+  assert.equal(oe.source, 'model stub-model');
+});
+
+test('G5 (R9b): a rejected reply over 1000 characters is logged with at most 1000 characters plus the ellipsis', async () => {
+  const lines = [];
+  const log = rejectedLogger({ env: { QP_LOG_REJECTED: '1' }, stderr: (s) => lines.push(s) });
+  const long = `Rule (a) fired: ${'connections '.repeat(150)}`; // ~1800 characters, rejected as size
+  await outcome.explain({ receipt: read(HOSTILE), send: stub([ok(long), ok(long)]).send, cfg: ON, logRejected: log });
+  assert.equal(lines.length, 2);
+  for (const l of lines) {
+    const rec = JSON.parse(l.slice('qp: outcome reply rejected '.length));
+    assert.ok(rec.text.length <= 1001, `logged text ${rec.text.length} characters`);
+    assert.ok(rec.text.endsWith('…'));
+  }
+});
+
 // ---------------------------------------------------------------- G5 (web server path)
 test('G5: the web server forwards only the child CLI\'s rejected-reply lines to its own stderr', () => {
   const { forwardRejected } = require('../src/web/server');
