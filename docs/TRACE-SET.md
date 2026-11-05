@@ -195,3 +195,11 @@ The exec identity (`exe`) keeps its lexical resolution, so roles and instrumenta
    - `unshare` is added to the traced set (95 names). It has an explicit no-op mapping, because it creates no file event.
 2. **An alias path was not followed through links.** `walk()` now covers it: links and fd aliases are substituted at every prefix.
 3. **`/dev/stdout` and `/dev/stderr` reached through a link.** They are resolved through the fd table by `walk()`, and `observe.js` `DEVICE_SINKS` keeps only `/dev/null` and `/dev/tty`.
+
+### Automated security review of 7a4fedaa (addressed)
+
+1. **One shared link budget per resolution.** It caps link follows at 40, the kernel's ELOOP limit, across all recursion.
+2. **More procfs paths covered.**
+   - `/proc/<x>/task/<tid>/{fd/N,root,cwd}` are followed.
+   - Walking past another procfs magic link (`exe`, `map_files/*` or `ns/*`) is unresolved.
+3. **A lookup never creates another process's fd table.** A foreign pid with no table yet is unknown.

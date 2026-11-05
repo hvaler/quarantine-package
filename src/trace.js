@@ -358,8 +358,12 @@ function analyse(text, opts = {}) {
     fdTables.set(key, t);
     return t;
   };
-  const fdEntry = (pid, fd) => {
+  // own = false: another process's fds. A lookup never creates that process's
+  // table (security review): a pid with no table yet (no clone return, no call)
+  // is unknown.
+  const fdEntry = (pid, fd, own = true) => {
     if (!Number.isInteger(fd) || fd < 0) return { k: 'unknown' };
+    if (!own && !fdTables.has(leader(pid))) return { k: 'unknown' };
     const t = tableOf(pid);
     return (t && t.get(fd)) || { k: 'unknown' };
   };
@@ -372,8 +376,10 @@ function analyse(text, opts = {}) {
   // unknown (unknown fd, unknown cwd, too many links) makes the path unresolved.
   // Returns { path } (path null = unresolved) or { sink: true } (a non-file fd).
   const procPid = (who, pid) => (who === 'self' || who === 'thread-self' ? pid : Number(who));
-  const walk = (pid, raw, baseDir, nofollowLast = false, depth = 0) => {
-    if (typeof raw !== 'string' || depth > 40) return { path: null };
+  // budget: one count of links followed, shared across the whole resolution
+  // (the kernel's ELOOP limit is 40), so nested links cannot blow up the analysis.
+  const walk = (pid, raw, baseDir, nofollowLast = false, budget = { follows: 0 }) => {
+    if (typeof raw !== 'string' || budget.follows > 40) return { path: null };
     let cur;
     if (raw.startsWith('/')) cur = '/';
     else if (typeof baseDir === 'string' && baseDir.startsWith('/')) cur = baseDir;
@@ -386,31 +392,37 @@ function analyse(text, opts = {}) {
       cur = cur === '/' ? `/${seg}` : `${cur}/${seg}`;
       // fd and procfs magic links: followed even as the last component (fail closed).
       let m;
-      if ((m = /^\/proc\/(self|thread-self|\d+)\/fd\/(\d+)$/.exec(cur))) {
-        const e = fdEntry(procPid(m[1], pid), Number(m[2]));
+      if ((m = /^\/proc\/(self|thread-self|\d+)(?:\/task\/(\d+))?\/fd\/(\d+)$/.exec(cur))) {
+        budget.follows += 1;
+        const who = m[2] !== undefined ? Number(m[2]) : procPid(m[1], pid);
+        const e = fdEntry(who, Number(m[3]), leader(who) === leader(pid));
         if (e.k === 'path') { cur = e.path; continue; }
         if (e.k === 'nonpath' && last) return { sink: true };
         return { path: null };
       }
-      if (cur === '/dev/fd') { const r = walk(pid, '/proc/self/fd', '/', false, depth + 1); if (r.path === null || r.sink) return r; cur = r.path; continue; }
+      if (cur === '/dev/fd') { budget.follows += 1; const r = walk(pid, '/proc/self/fd', '/', false, budget); if (r.path === null || r.sink) return r; cur = r.path; continue; }
       if ((m = /^\/dev\/std(in|out|err)$/.exec(cur))) {
         const e = fdEntry(pid, { in: 0, out: 1, err: 2 }[m[1]]);
         if (e.k === 'path') { cur = e.path; continue; }
         if (e.k === 'nonpath' && last) return { sink: true };
         return { path: null };
       }
-      if ((m = /^\/proc\/(self|thread-self|\d+)\/root$/.exec(cur))) { cur = '/'; continue; }
-      if ((m = /^\/proc\/(self|thread-self|\d+)\/cwd$/.exec(cur))) {
-        const w = cwd.get(tg(procPid(m[1], pid)));
+      if ((m = /^\/proc\/(self|thread-self|\d+)(?:\/task\/\d+)?\/root$/.exec(cur))) { cur = '/'; continue; }
+      if ((m = /^\/proc\/(self|thread-self|\d+)(?:\/task\/(\d+))?\/cwd$/.exec(cur))) {
+        const w = cwd.get(tg(m[2] !== undefined ? Number(m[2]) : procPid(m[1], pid)));
         if (typeof w !== 'string') return { path: null };
         cur = w; continue;
       }
+      // Other procfs magic links (exe, map_files/*, ns/*) are not followed here:
+      // walking past one is unresolved (fail closed).
+      if (!last && /^\/proc\/(self|thread-self|\d+)(?:\/task\/\d+)?\/(exe|map_files\/[^/]+|ns\/[^/]+)$/.test(cur)) return { path: null };
       if (last && nofollowLast) break;
       // Task-created symlinks, then the image's directory symlinks.
       const target = links.has(cur) ? links.get(cur) : IMAGE_DIR_LINKS[cur];
       if (target !== undefined) {
         const parent = cur.slice(0, cur.lastIndexOf('/')) || '/';
-        const r = walk(pid, target, parent, false, depth + 1);
+        budget.follows += 1;
+        const r = walk(pid, target, parent, false, budget);
         if (r.path === null || r.sink) return { path: null };
         cur = r.path;
       }

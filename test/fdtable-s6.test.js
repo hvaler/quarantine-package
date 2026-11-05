@@ -195,3 +195,12 @@ test('security review: a thread without CLONE_FILES, or unshare(CLONE_FILES), ma
   assert.ok(ids(un.d).has('a'));
   assert.ok(clean(run(['unshare(CLONE_NEWUSER) = -1 EPERM (Operation not permitted)'])), 'unshare itself is not a file event');
 });
+
+test('security review 2: link budget, /proc/<pid>/task/<tid>/fd, other procfs links, and a foreign pid not yet seen', () => {
+  // A chain of self-referencing links is cut by one shared follow budget: unresolved.
+  const loop = run(['symlink("/tmp/l2", "/tmp/l1") = 0', 'symlink("/tmp/l1", "/tmp/l2") = 0', 'mkdir("/tmp/l1/x", 0777) = -1 ELOOP (Too many levels of symbolic links)']);
+  assert.ok(ids(loop.d).has('a'));
+  assert.ok(ids(run([RO(25), 'chmod("/proc/self/task/40/fd/25", 0600) = -1 EROFS (Read-only file system)']).d).has('a'));
+  assert.ok(ids(run(['mkdir("/proc/self/exe/../x", 0777) = -1 ENOTDIR (Not a directory)']).d).has('a'));
+  assert.ok(ids(run(['chmod("/proc/99/fd/3", 0600) = -1 ENOENT (No such file or directory)']).d).has('a'));
+});
