@@ -224,7 +224,7 @@ A fixed guard checks the reply. Any doubt replaces it with a sentence built by c
 - or comes from a call that failed or timed out (20 s).
 
 On top of those checks, the guard uses an **allowlist**. Every word of the reply must come from a fixed
-descriptive vocabulary of about 410 words: files, network, processes, limits, prediction. That vocabulary has no
+descriptive vocabulary of about 409 words: files, network, processes, limits, prediction. That vocabulary has no
 advice, judgement or verdict word. "install" is allowed only in "install script", "install hook" and similar.
 So "you can add it", "nothing to worry about" or "the rules overreacted" fail in any wording, and so does any
 quoted path or host name. The prompt tells the model to describe those generically.

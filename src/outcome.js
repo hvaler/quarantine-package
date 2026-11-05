@@ -189,7 +189,6 @@ const PHRASES = Object.freeze({
 // docs/L-20-vocabulary.md; the adversary reviews every entry.
 const S8_ADDITIONS = Object.freeze({
   enumerated: 'listed the environment variables (env-enumerate observations)',
-  completed: 'a step or the analysis completed (fact, not a judgement)',
   matching: 'participle of "matched" (prediction vs observed)',
   dimension: 'one of the three predicted dimensions (network, files, processes)',
   dimensions: 'plural of dimension',
@@ -199,15 +198,11 @@ const S8_ADDITIONS = Object.freeze({
   touching: 'participle of touched (already allowed)',
   resource: 'resource limit (rule e text: "resource or time limit")',
   resources: 'plural of resource',
-  kept: 'past tense: kept spawning, kept running',
   seen: 'past participle of observed-in-the-trace',
-  stayed: 'past tense: stayed incomplete',
-  finished: 'past tense: the step finished',
   runtime: 'container runtime (the socket rule b looks for)',
   up: 'particle in "looked up" (DNS lookup)',
   directly: 'adverb of manner: started directly, without a shell',
   measured: 'past tense: the three measured dimensions',
-  plain: 'plain HTTP (plaintext), rule d text',
   exhausted: 'the pids limit was exhausted (rule e)',
   forked: 'past tense of fork (already allowed as a noun)',
   entered: 'past tense: entered a loop',

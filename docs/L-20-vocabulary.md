@@ -32,17 +32,12 @@ rejected replies with it, out of 18 diagnosis calls.
 | `behaviour` | vocabulary | 0 | British spelling of `behavior` |
 | `resource` | vocabulary | 2 | rule (e) text: "task ended by a resource or time limit" |
 | `resources` | vocabulary | 0 | plural of `resource` |
-| `completed` | vocabulary | 1 | a step completed, as a fact ("successfully" stays out) |
 | `touching` | vocabulary | 1 | participle of `touched`, which is already allowed |
 | `up` | vocabulary | 1 | the particle in "looked up" (a DNS lookup) |
-| `plain` | vocabulary | 1 | plain HTTP, i.e. plaintext; rule (d) text |
 | `measured` | vocabulary | 1 | past tense: the measured dimensions |
 | `runtime` | vocabulary | 1 | container runtime, the socket that rule (b) looks for |
 | `directly` | vocabulary | 1 | adverb of manner: started directly, without a shell |
-| `kept` | vocabulary | 1 | past tense: kept spawning |
 | `seen` | vocabulary | 1 | past participle: seen in the trace |
-| `finished` | vocabulary | 1 | past tense: a step finished |
-| `stayed` | vocabulary | 1 | past tense: stayed incomplete |
 | `across` | vocabulary | 1 | preposition: across the three dimensions |
 | `exhausted` | vocabulary | 1 | the pids limit was exhausted (rule e) |
 | `forked` | vocabulary | 1 | past tense of `fork`, which is already allowed as a noun |
@@ -54,6 +49,9 @@ rejected replies with it, out of 18 diagnosis calls.
 | Word(s) | Why they stay out |
 |---|---|
 | `run` (4) | "Run it." is advice to install; the prompt says "the analysis" instead |
+| `stayed`, `kept` (1 each) | containment denial: "Rule (a) fired; the package stayed in its folder" (or "kept to its folder") contradicts the finding with allowed words only. Proposed in the first S8 draft, withdrawn before review (analyst note b0e3fe2b). |
+| `plain` (1) | judgement: "plain behaviour" reads as ordinary/benign; "plaintext" is already allowed. Withdrawn (auditor note e6e70340). |
+| `completed`, `finished` (1 each) | misdescribe a task that rule (e) says a limit ended ("the task completed"). Withdrawn (auditor note e6e70340). |
 | `harness` (3) | it moves an act off the package |
 | `load` (3) | bare imperative ("Load it."); `loaded` and `loading` are allowed |
 | `successfully`, `well`, `normally` | judgement words |
