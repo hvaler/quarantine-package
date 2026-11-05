@@ -62,14 +62,34 @@ function webConfig(env = process.env) {
   };
 }
 
+const REJECTED_PREFIX = 'qp: outcome reply rejected ';
+const REJECTED_LINE_MAX = 4096;
+// Returns a stderr 'data' handler that passes through only complete rejected-reply lines.
+function forwardRejected(sink) {
+  let buf = '';
+  return (d) => {
+    buf += String(d);
+    if (buf.length > 65536) buf = buf.slice(-65536);
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (line.startsWith(REJECTED_PREFIX)) sink(`${line.slice(0, REJECTED_LINE_MAX)}\n`);
+    }
+  };
+}
+
 // Default job runner: the CLI in a child process, argv only.
-function cliRunner({ repoRoot, env }) {
+function cliRunner({ repoRoot, env, logSink = (s) => process.stderr.write(s) }) {
   return function run(target) {
     const args = [path.join(repoRoot, 'src', 'cli.js'), 'analyse', ...(target.kind === 'fixture' ? ['--fixture', target.fixture] : [target.spec])];
     const child = spawn(process.execPath, args, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
     child.stdout.on('data', (d) => { if (out.length < 65536) out += d; });
-    child.stderr.on('data', () => {}); // never echoed to clients
+    // Never echoed to clients. S8 G5: only the child's "outcome reply rejected" lines (which
+    // the CLI writes solely with QP_LOG_REJECTED=1) are forwarded to this process's stderr,
+    // so the journal captures them; every other stderr line is dropped as before.
+    child.stderr.on('data', forwardRejected(logSink));
     const done = new Promise((resolve) => child.on('close', (code) => {
       let summary = null;
       try { summary = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch (_) { summary = null; }
@@ -273,4 +293,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { createApp, webConfig, validateWebSpec, cliRunner };
+module.exports = { createApp, webConfig, validateWebSpec, cliRunner, forwardRejected };

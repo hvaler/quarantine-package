@@ -137,6 +137,38 @@ test('G4: every addition is documented, none is banned, and "zero" is removed', 
   assert.deepEqual(outcome.guard('Rule (a) fired: the package wrote zero files outside its folder.', { verdict: 'do-not-install', firedRules: ['a'] }), { ok: false, reason: 'vocabulary' });
 });
 
+// ---------------------------------------------------------------- G5 (web server path)
+test('G5: the web server forwards only the child CLI\'s rejected-reply lines to its own stderr', () => {
+  const { forwardRejected } = require('../src/web/server');
+  const out = [];
+  const h = forwardRejected((s) => out.push(s));
+  h('qp: some other diagnostic\nqp: outcome reply rej');
+  h('ected {"reason":"vocabulary"}\nError: stack trace line\n');
+  h('qp: outcome reply rejected {"reason":"size"}'); // no newline yet: held back
+  assert.deepEqual(out, ['qp: outcome reply rejected {"reason":"vocabulary"}\n']);
+  h('\n');
+  assert.equal(out.length, 2);
+  assert.ok(out.every((l) => l.startsWith('qp: outcome reply rejected ')));
+});
+
+test('G5: cliRunner wires the forwarder to the child stderr (a real child process)', async () => {
+  const { cliRunner } = require('../src/web/server');
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qp-g5-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src'));
+    // a stand-in CLI: prints one rejected line, one other stderr line, and a summary
+    fs.writeFileSync(path.join(dir, 'src', 'cli.js'), "process.stderr.write('qp: outcome reply rejected {\"reason\":\"vocabulary\"}\\nqp: noise\\n'); console.log(JSON.stringify({ taskId: 'abcdef0123' }));\n");
+    const lines = [];
+    const run = cliRunner({ repoRoot: dir, env: process.env, logSink: (s) => lines.push(s) });
+    const { summary } = await run({ kind: 'fixture', fixture: 'x' }).done;
+    assert.equal(summary.taskId, 'abcdef0123');
+    assert.deepEqual(lines, ['qp: outcome reply rejected {"reason":"vocabulary"}\n']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------- G5
 test('G5: QP_LOG_REJECTED is off by default; on, it writes one capped, redacted line to stderr only', async () => {
   assert.equal(rejectedLogger({ env: {} }), null);
