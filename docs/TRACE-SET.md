@@ -213,3 +213,18 @@ strace pads short calls to a column, for example `dup2(17, 1)       = 1` and `cl
 - With the fd table it dropped `dup2` and `dup` results. The adversary's adv7-benign2 (a spawn with a /work file as stdout) then got do-not-install a:3.
 
 **The fix:** the separator is now `)` + spaces + `= `. A test covers it with verbatim lines from that production trace.
+
+### P2 (adversary msg 19f47921): links that move (DEC-D5-7)
+
+The tracer now tracks precisely:
+- `rename` moves every task link and made-entry at or under the old path to the new path, including `RENAME_EXCHANGE`.
+- `link` or `linkat` without `AT_SYMLINK_FOLLOW` of a known symlink copies it to the new name.
+- `unlink` and `rmdir` forget them.
+
+It also applies a fail-closed bound, as the analyst asked. In the writable mounts (`/work`, `/tmp`, `/home/qp`, `/dev/shm`), `walk()` refuses to apply `..` after a component that may be an untracked link: the path is then unresolved. A component may be an untracked link when:
+- it, or an ancestor, has kind "unknown". For example, a pre-existing entry moved by `rename`, or the new name of a hard link to a non-link.
+- the task ever created, renamed, linked or removed a path the tracer could not resolve. That is a global flag.
+
+Directories made by `mkdir` stay resolvable, so ordinary task trees are not over-condemned.
+
+**Limitation:** a symlink that already exists in `/work` before the trace is unknown to the tracer. The download phase uses `npm ci`, and pacote does not extract symlinks from registry tarballs, so this is not expected. If such a link exists, a `..` after it is collapsed lexically.

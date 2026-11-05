@@ -1,0 +1,7 @@
+{
+  "name": "adv7-renlink",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S6 adversary re-attack fixture: a symlink the tracer forgets (renamed, hard-linked, parent dir renamed) then .. (rules a and b)",
+  "scripts": { "install": "node attempts.js" }
+}

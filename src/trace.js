@@ -380,6 +380,42 @@ function analyse(text, opts = {}) {
   // and /proc/<x>/fd/N (through the fd table). A component whose real target is
   // unknown (unknown fd, unknown cwd, too many links) makes the path unresolved.
   // Returns { path } (path null = unresolved) or { sink: true } (a non-file fd).
+  // ---- P2 (adversary msg 19f47921): links that move. made: paths the task created
+  // or moved in the writable mounts -> 'dir' | 'link' | 'unknown'. A rename moves the
+  // links and made-entries under it; a hard link of a symlink copies it. Anything not
+  // tracked exactly is 'unknown', and an unresolved create/rename/link/unlink sets
+  // untrackedLinks. walk() never applies ".." after a component that may be an
+  // untracked link: such a path is unresolved (fail closed).
+  const WRITABLE_ROOTS = ['/work', '/tmp', '/home/qp', '/dev/shm'];
+  const inWritable = (p) => WRITABLE_ROOTS.some((r) => p === r || p.startsWith(`${r}/`));
+  const made = new Map();
+  let untrackedLinks = false;
+  const under = (p, root) => p === root || p.startsWith(`${root}/`);
+  const forgetMade = (p) => { for (const k of [...made.keys()]) if (under(k, p)) made.delete(k); };
+  const moveTree = (from, to, exchange) => {
+    const take = (m, src) => [...m].filter(([k]) => under(k, src)).map(([k, v]) => [k, v]);
+    const lf = take(links, from); const mf = take(made, from);
+    const lt = exchange ? take(links, to) : []; const mt = exchange ? take(made, to) : [];
+    for (const k of [...links.keys()]) if (under(k, from) || under(k, to)) links.delete(k);
+    for (const k of [...made.keys()]) if (under(k, from) || under(k, to)) made.delete(k);
+    for (const [k, v] of lf) links.set(to + k.slice(from.length), v);
+    for (const [k, v] of mf) made.set(to + k.slice(from.length), v);
+    for (const [k, v] of lt) links.set(from + k.slice(to.length), v);
+    for (const [k, v] of mt) made.set(from + k.slice(to.length), v);
+    // Whatever was at from (not made by the task, so its kind is unknown) is now at to.
+    if (!made.has(to) && !links.has(to)) made.set(to, 'unknown');
+    if (exchange && !made.has(from) && !links.has(from)) made.set(from, 'unknown');
+  };
+  // May cur be a link the tracer does not know? Only in a writable mount.
+  const maybeUntrackedLink = (cur) => {
+    if (!inWritable(cur)) return false;
+    if (untrackedLinks) return true;
+    for (let p = cur; p && p !== '/'; p = p.slice(0, p.lastIndexOf('/')) || '/') {
+      if (made.get(p) === 'unknown') return true;
+      if (p === '/') break;
+    }
+    return false;
+  };
   const procPid = (who, pid) => (who === 'self' || who === 'thread-self' ? pid : Number(who));
   // budget: one count of links followed, shared across the whole resolution
   // (the kernel's ELOOP limit is 40), so nested links cannot blow up the analysis.
@@ -393,7 +429,10 @@ function analyse(text, opts = {}) {
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
       const last = i === segs.length - 1;
-      if (seg === '..') { const cut = cur.lastIndexOf('/'); cur = cut <= 0 ? '/' : cur.slice(0, cut); continue; }
+      if (seg === '..') {
+        if (maybeUntrackedLink(cur)) return { path: null }; // P2: cannot prove cur is not a link
+        const cut = cur.lastIndexOf('/'); cur = cut <= 0 ? '/' : cur.slice(0, cut); continue;
+      }
       cur = cur === '/' ? `/${seg}` : `${cur}/${seg}`;
       // fd and procfs magic links: followed even as the last component (fail closed).
       let m;
@@ -716,18 +755,35 @@ function analyse(text, opts = {}) {
         } else if (/^(unlink|unlinkat|rmdir)$/.test(c.name)) {
           const r = nofollow(0);
           push('fs-write', r);
-          if (!blocked) forget(r);
+          if (!blocked) { if (r.path) { forget(r); forgetMade(r.path); } else untrackedLinks = true; }
         } else if (/^(creat|mkdir|mkdirat|truncate|chmod|fchmodat)$/.test(c.name)) {
-          push('fs-write', at(0));
+          const r = at(0);
+          push('fs-write', r);
+          // P2: a directory the task made is a directory (not a link) until it is
+          // renamed, replaced or removed.
+          if (!blocked && (c.name === 'mkdir' || c.name === 'mkdirat')) { if (r.path) made.set(r.path, 'dir'); else untrackedLinks = true; }
         } else if (/^(rename|renameat2?)$/.test(c.name)) {
           const to = nofollow(1);
           const from = nofollow(0);
           push('fs-write', to);
           push('fs-write', from);
-          if (!blocked) { forget(from); forget(to); }
+          // P2: a rename MOVES every link (and made-entry) at or under from to to.
+          if (!blocked) {
+            if (from.path && to.path) moveTree(from.path, to.path, /RENAME_EXCHANGE/.test(c.args));
+            else untrackedLinks = true;
+          }
         } else if (/^(link|linkat)$/.test(c.name)) {
-          push('fs-write', nofollow(1));
+          const nw = nofollow(1);
+          push('fs-write', nw);
           push('fs-write', at(0));
+          // P2: link() does not follow a symlink (unless linkat AT_SYMLINK_FOLLOW):
+          // the new name is the same symlink.
+          if (!blocked) {
+            const old = nofollow(0);
+            if (!old.path || !nw.path) untrackedLinks = true;
+            else if (!/AT_SYMLINK_FOLLOW/.test(c.args) && links.has(old.path)) { links.set(nw.path, links.get(old.path)); made.set(nw.path, 'link'); }
+            else made.set(nw.path, 'unknown');
+          }
         } else if (c.name === 'symlink' || c.name === 'symlinkat') {
           // The link itself is a write; its target is an access to whatever it points at.
           const link = nofollow(args.length - 1);
@@ -740,7 +796,8 @@ function analyse(text, opts = {}) {
           const tr = stored ? walk(p, stored, '/') : { path: null };
           const target = { path: tr.sink ? null : tr.path, raw };
           push('fs-link-target', target);
-          if (!blocked && link.path && stored) links.set(link.path, stored);
+          if (!blocked && link.path && stored) { links.set(link.path, stored); made.set(link.path, 'link'); }
+          else if (!blocked) untrackedLinks = true; // a link exists at a path we cannot name (P2)
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
           if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(c.args)) break;

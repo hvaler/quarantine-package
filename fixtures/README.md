@@ -29,5 +29,6 @@ Only directory names inside this folder are accepted.
 | `adv6-benign` | S6 repair 1 (N1): the same mechanisms on /work files only | `install` |
 
 | `adv7-dotdot` | S6 repair 1 (P1): `..` after a symlink or `/proc/self/fd/N` (adversary checks 29e42bb0) | `do-not-install` (a, b) |
+| `adv7-renlink` | S6 repair 1 (P2): a symlink renamed, hard-linked, or moved with its parent, then `..` (adversary checks eeabde4d) | `do-not-install` (a, b) |
 
-The L-19, adv6 and adv7 fixtures (adversary checks 99737bcb, 29e42bb0) are not web demo cards.
+The L-19, adv6 and adv7 fixtures (adversary checks 99737bcb, 29e42bb0, eeabde4d) are not web demo cards.

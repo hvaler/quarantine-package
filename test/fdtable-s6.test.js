@@ -223,3 +223,31 @@ test('padded short lines carry their return value (verbatim, impl6s task 4e8a6e2
   assert.equal(splitCall('chdir("/tmp")                     = 0').ret, 0);
   assert.equal(splitCall('fchmod(1, 0644)   = -1 EPERM (Operation not permitted)').errno, 'EPERM');
 });
+
+// ---- P2 (adversary msg 19f47921): links that move.
+test('P2: a renamed symlink is still followed before ".." (rule a)', () => {
+  const r = run([`symlink("${DEEP}", "/tmp/r1") = 0`, 'rename("/tmp/r1", "/tmp/r2") = 0', 'mkdir("/tmp/r2/../../../../work/qpr", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(writes(r.ob).includes('mkdir /usr/work/qpr'), writes(r.ob).join(', '));
+});
+
+test('P2: a hard link of a symlink is the same symlink (rule a)', () => {
+  const r = run([`symlink("${DEEP}", "/tmp/h1") = 0`, 'link("/tmp/h1", "/tmp/h2") = 0', 'mkdir("/tmp/h2/../../../../work/qph", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(writes(r.ob).includes('mkdir /usr/work/qph'), writes(r.ob).join(', '));
+});
+
+test('P2: renaming a parent directory moves the links inside it (rule b)', () => {
+  const r = run(['mkdir("/tmp/d1", 0777) = 0', 'symlink("/home/qp/ra/rb", "/tmp/d1/l") = 0', 'rename("/tmp/d1", "/tmp/d2") = 0',
+    'openat(AT_FDCWD</work>, "/tmp/d2/l/../../.ssh/id_rsa", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)']);
+  assert.ok(ids(r.d).has('b'));
+});
+
+test('P2 fail-closed bound: ".." after a moved path of unknown kind, or after any untracked link creation, is unresolved', () => {
+  // A pre-existing entry (not made by the task) renamed: its kind is unknown.
+  const a = run(['rename("/work/node_modules/x", "/tmp/m") = 0', 'mkdir("/tmp/m/../q", 0777) = 0']);
+  assert.ok(ids(a.d).has('a'), 'unresolved write');
+  // A symlink created at a path the tracer cannot name poisons ".." in writable mounts.
+  const b = run(['clone(child_stack=0x1, flags=CLONE_VM|CLONE_FS|SIGCHLD) = 48', [48, 'symlink("/usr/local/lib/node_modules/npm", "rel/l") = 0'], 'mkdir("/tmp/x/../y", 0777) = 0']);
+  assert.ok(ids(b.d).has('a'));
+  // Ordinary task directories keep ".." resolvable (no over-condemnation).
+  assert.ok(clean(run(['mkdir("/tmp/a", 0777) = 0', 'mkdir("/tmp/a/b", 0777) = 0', 'openat(AT_FDCWD</work>, "/tmp/a/b/../c.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 5'])));
+});
