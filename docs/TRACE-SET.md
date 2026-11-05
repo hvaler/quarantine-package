@@ -228,3 +228,8 @@ It also applies a fail-closed bound, as the analyst asked. In the writable mount
 Directories made by `mkdir` stay resolvable, so ordinary task trees are not over-condemned.
 
 **Limitation:** a symlink that already exists in `/work` before the trace is unknown to the tracer. The download phase uses `npm ci`, and pacote does not extract symlinks from registry tarballs, so this is not expected. If such a link exists, a `..` after it is collapsed lexically.
+
+### Automated security review of 57ab9411 (addressed)
+
+1. **Flag tests in the file branches ignore quoted strings.** They read a copy of the arguments with every quoted string blanked, so a path such as `/tmp/AT_SYMLINK_NOFOLLOW` cannot flip follow, nofollow, exchange or write decisions. `RENAME_EXCHANGE` counts only for `renameat2`.
+2. **An unknown outcome counts as uncertain.** A rename, link, unlink, rmdir or symlink killed mid-call (`= ?`) or unfinished at the end is not treated as a success. It sets the untracked-links flag, so `..` in the writable mounts becomes unresolved.

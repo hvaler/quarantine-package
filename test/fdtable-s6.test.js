@@ -251,3 +251,14 @@ test('P2 fail-closed bound: ".." after a moved path of unknown kind, or after an
   // Ordinary task directories keep ".." resolvable (no over-condemnation).
   assert.ok(clean(run(['mkdir("/tmp/a", 0777) = 0', 'mkdir("/tmp/a/b", 0777) = 0', 'openat(AT_FDCWD</work>, "/tmp/a/b/../c.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 5'])));
 });
+
+test('security review: flag names inside a quoted path do not change a decision; an unknown rename outcome is fail-closed', () => {
+  // A link whose own name contains "AT_SYMLINK_NOFOLLOW" is still followed by stat-like calls.
+  const r = run(['symlink("/home/qp/.ssh", "/tmp/AT_SYMLINK_NOFOLLOW") = 0', 'newfstatat(AT_FDCWD</work>, "/tmp/AT_SYMLINK_NOFOLLOW", 0x7ffd0000, 0) = 0']);
+  assert.ok(ids(r.d).has('b'));
+  // rename killed mid-call (no return): the tree may or may not have moved.
+  const u = run([`symlink("${DEEP}", "/tmp/r1") = 0`, 'rename("/tmp/r1", "/tmp/r2" <unfinished ...>', '']);
+  assert.ok(u);
+  const v = run([`symlink("${DEEP}", "/tmp/k1") = 0`, 'rename("/tmp/k1", "/tmp/k2") = ?', 'mkdir("/tmp/k2/../../../../work/q", 0777) = -1 EROFS (Read-only file system)']);
+  assert.ok(ids(v.d).has('a'));
+});

@@ -739,23 +739,29 @@ function analyse(text, opts = {}) {
         // (either side of a rename), so a stale mapping can never name a later file.
         const forget = (r) => { if (r.path) { for (const l of [...links.keys()]) if (l === r.path || l.startsWith(`${r.path}/`)) links.delete(l); } };
         const blocked = c.ret === -1;
+        // Security review: flags are read from the arguments with quoted strings
+        // blanked, so a path containing a flag name cannot flip a decision.
+        const fa = c.args.replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?/g, '""');
+        // An unknown outcome (killed mid-call, unfinished at the end) may have applied.
+        const uncertain = c.ret === null;
         const push = (type, r, extra = {}) => { if (!r.sink) events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra }); };
         if (c.name === 'openat' || c.name === 'open' || c.name === 'openat2' || c.name === 'creat') {
           // openat2 prints its flags inside the how struct ({flags=O_WRONLY|O_CREAT, ...}).
           // RESOLVE_IN_ROOT/BENEATH only confine the lookup, so the path read here is
           // the widest one the call could reach (fail closed).
           const r = at(0);
-          push(c.name === 'creat' || WRITE_FLAGS.test(c.args) ? 'fs-write' : 'fs-read', r);
+          push(c.name === 'creat' || WRITE_FLAGS.test(fa) ? 'fs-write' : 'fs-read', r);
           // Repair 1: the returned fd names this file (or a non-file, for a sink
           // such as /dev/stdout reopened); an unresolved path leaves it unknown.
           if (typeof c.ret === 'number' && c.ret >= 0) {
-            const cloexec = /O_CLOEXEC/.test(c.args);
+            const cloexec = /O_CLOEXEC/.test(fa);
             fdSet(c.pid, c.ret, r.sink ? { k: 'nonpath', cloexec } : r.path ? { k: 'path', path: r.path, cloexec } : null);
           }
         } else if (/^(unlink|unlinkat|rmdir)$/.test(c.name)) {
           const r = nofollow(0);
           push('fs-write', r);
-          if (!blocked) { if (r.path) { forget(r); forgetMade(r.path); } else untrackedLinks = true; }
+          if (uncertain) untrackedLinks = true;
+          else if (!blocked) { if (r.path) { forget(r); forgetMade(r.path); } else untrackedLinks = true; }
         } else if (/^(creat|mkdir|mkdirat|truncate|chmod|fchmodat)$/.test(c.name)) {
           const r = at(0);
           push('fs-write', r);
@@ -768,8 +774,9 @@ function analyse(text, opts = {}) {
           push('fs-write', to);
           push('fs-write', from);
           // P2: a rename MOVES every link (and made-entry) at or under from to to.
-          if (!blocked) {
-            if (from.path && to.path) moveTree(from.path, to.path, /RENAME_EXCHANGE/.test(c.args));
+          if (uncertain) untrackedLinks = true;
+          else if (!blocked) {
+            if (from.path && to.path && (c.name === 'renameat2' || !/RENAME_EXCHANGE/.test(fa))) moveTree(from.path, to.path, c.name === 'renameat2' && /RENAME_EXCHANGE/.test(fa));
             else untrackedLinks = true;
           }
         } else if (/^(link|linkat)$/.test(c.name)) {
@@ -778,10 +785,11 @@ function analyse(text, opts = {}) {
           push('fs-write', at(0));
           // P2: link() does not follow a symlink (unless linkat AT_SYMLINK_FOLLOW):
           // the new name is the same symlink.
-          if (!blocked) {
+          if (uncertain) untrackedLinks = true;
+          else if (!blocked) {
             const old = nofollow(0);
             if (!old.path || !nw.path) untrackedLinks = true;
-            else if (!/AT_SYMLINK_FOLLOW/.test(c.args) && links.has(old.path)) { links.set(nw.path, links.get(old.path)); made.set(nw.path, 'link'); }
+            else if (!/AT_SYMLINK_FOLLOW/.test(fa) && links.has(old.path)) { links.set(nw.path, links.get(old.path)); made.set(nw.path, 'link'); }
             else made.set(nw.path, 'unknown');
           }
         } else if (c.name === 'symlink' || c.name === 'symlinkat') {
@@ -796,17 +804,17 @@ function analyse(text, opts = {}) {
           const tr = stored ? walk(p, stored, '/') : { path: null };
           const target = { path: tr.sink ? null : tr.path, raw };
           push('fs-link-target', target);
-          if (!blocked && link.path && stored) { links.set(link.path, stored); made.set(link.path, 'link'); }
-          else if (!blocked) untrackedLinks = true; // a link exists at a path we cannot name (P2)
+          if (c.ret === 0 && link.path && stored) { links.set(link.path, stored); made.set(link.path, 'link'); }
+          else if (!blocked) untrackedLinks = true; // a link exists at a path we cannot name, or may (P2)
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.
-          if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(c.args)) break;
-          push('fs-stat', c.name === 'lstat' || /AT_SYMLINK_NOFOLLOW/.test(c.args) ? nofollow(0) : at(0));
+          if (args[0] && args[0].str === '' && /AT_EMPTY_PATH/.test(fa)) break;
+          push('fs-stat', c.name === 'lstat' || /AT_SYMLINK_NOFOLLOW/.test(fa) ? nofollow(0) : at(0));
         } else if (FS_SYSCALLS[c.name]) {
           // L-19 (S6): the calls added to the traced set.
           const { kind, form } = FS_SYSCALLS[c.name];
           const type = kind === 'write' ? 'fs-write' : 'fs-probe';
-          const noFollowFlag = /AT_SYMLINK_NOFOLLOW/.test(c.args);
+          const noFollowFlag = /AT_SYMLINK_NOFOLLOW/.test(fa);
           const fromFd = (text) => {
             const a = fdAnnotation(text);
             if (a.kind === 'path' && a.path) return { r: { path: a.path, raw: a.path } };
@@ -841,7 +849,7 @@ function analyse(text, opts = {}) {
             if (args.length) { args[0].base = 'cwd'; target = { r: at(0) }; }
           } else if (form === 'fanotify') {
             if (args.length) {
-              target = { r: /FAN_MARK_DONT_FOLLOW/.test(c.args) ? nofollow(0) : at(0) };
+              target = { r: /FAN_MARK_DONT_FOLLOW/.test(fa) ? nofollow(0) : at(0) };
             } else {
               const d = /(\d+<[^>]*>),\s*NULL\s*$/.exec(c.args);
               target = d ? fromFd(d[1]) : null;
