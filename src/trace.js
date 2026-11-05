@@ -744,7 +744,9 @@ function analyse(text, opts = {}) {
         const blocked = c.ret === -1;
         // Security review: flags are read from the arguments with quoted strings
         // blanked, so a path containing a flag name cannot flip a decision.
-        const fa = c.args.replace(/(AT_FDCWD|\b\d+)<[^>]*>/g, '$1').replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?/g, '""');
+        // One left-to-right pass: a quoted string is blanked whole; an fd annotation
+        // outside a string is dropped. Neither can leak flag text.
+        const fa = c.args.replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?|(AT_FDCWD|\b\d+)<[^>]*>/g, (m0, fd) => (fd !== undefined ? fd : '""'));
         // An unknown outcome (killed mid-call, unfinished at the end) may have applied.
         const uncertain = c.ret === null;
         const push = (type, r, extra = {}) => { if (!r.sink) events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra }); };
@@ -799,6 +801,7 @@ function analyse(text, opts = {}) {
             const old = nofollow(0);
             if (!old.path || !nw.path) untrackedLinks = true;
             else if (!/AT_SYMLINK_FOLLOW/.test(fa) && links.has(old.path)) { links.set(nw.path, links.get(old.path)); made.set(nw.path, 'link'); }
+            else if (made.get(old.path) === 'ambiguous') made.set(nw.path, 'ambiguous');
             else made.set(nw.path, 'unknown');
           }
         } else if (c.name === 'symlink' || c.name === 'symlinkat') {
