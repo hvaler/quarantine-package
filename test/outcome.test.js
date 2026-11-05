@@ -275,6 +275,44 @@ test('E2c (DEC-D6-14): a non-install reply must cite a fired rule; "but" is reje
   assert.deepEqual(g('Rule (a) fired, but the write was refused.', 'do-not-install', ['a']), { ok: false, reason: 'vocabulary' });
 });
 
+// ---------------------------------------------------------------- auditor mutant survivors on 57c657e
+test('E2c: negation alone (rule cited, words in the vocabulary) is rejected when the verdict is not install', () => {
+  for (const t of [
+    'Rule (a) fired, and the package wrote nothing outside its folder.',
+    'Rule (a) fired: the package made no request.',
+    'Rule (a) fired: the write was not refused.',
+    'Rule (f) fired: the package sent a request without a payload.',
+    'Rule (f) fired: none of the requests carried a body.',
+  ]) {
+    const v = t.includes('(a)') ? ['do-not-install', ['a']] : ['review', ['f']];
+    assert.deepEqual(g(t, v[0], v[1]), { ok: false, reason: 'negation' }, t);
+  }
+});
+
+test('E2c (iii): the parenthesised form alone catches a or i that did not fire', () => {
+  assert.deepEqual(g('Rule (f) fired and (a) fired.', 'review', ['f']), { ok: false, reason: 'rule-not-fired' });
+  assert.deepEqual(g('Rule (f) fired and (i) fired.', 'review', ['f']), { ok: false, reason: 'rule-not-fired' });
+});
+
+test('E2c (iv): over 600 characters but within 90 words and 4 sentences is rejected', () => {
+  const t = `Rule (a) fired: ${'instrumentation '.repeat(40)}recorded.`;
+  assert.ok(t.length > 600 && t.length <= 700, `${t.length}`);
+  assert.ok(t.split(/\s+/).length <= 90);
+  assert.deepEqual(g(t, 'do-not-install', ['a']), { ok: false, reason: 'size' });
+});
+
+test('E2a: a secret-shaped path is redacted per string, without triggering the whole-block fallback', () => {
+  const rc = JSON.parse(JSON.stringify(read8b()));
+  const o = rc.observations.find((x) => x.kind === 'fs-write');
+  o.path = `/etc/${FAKE_KEY}`;
+  const s = outcome.buildSummary(rc);
+  const ro = s.representativeObservations.find((x) => x.id === o.id);
+  assert.equal(ro.path, '[line redacted by secret scan]');
+  assert.ok(!JSON.stringify(s).includes(FAKE_KEY.slice(4)));
+  assert.equal(s.package.name, rc.package.name, 'the whole-block fallback did not run');
+  assert.ok(s.representativeObservations.length > 1);
+});
+
 // ---------------------------------------------------------------- template
 test('E2c: the template passes the guard and uses no package-controlled string, for every stored receipt', () => {
   for (const rc of receipts) {
