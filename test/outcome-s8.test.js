@@ -38,7 +38,7 @@ test('G2: the prompt states every constraint the guard checks, with the whole vo
 
 // ---------------------------------------------------------------- G3
 test('G3: a reply rejected once and accepted on the retry is shown, with both attempts recorded', async () => {
-  const s = stub([ok('Rules (a) and (d) fired: it wrote across dimensions and kept spinning.'), ok(GOOD)]);
+  const s = stub([ok('Rules (a) and (d) fired: it wrote across dimensions while spinning.'), ok(GOOD)]);
   const oe = await outcome.explain({ receipt: read(HOSTILE), send: s.send, cfg: ON });
   assert.equal(s.calls.length, 2);
   assert.equal(oe.source, 'model stub-model');
@@ -93,7 +93,7 @@ test('G3 / DEC-D7-5: the retry never carries a package-controlled string', () =>
   rc.observations[0].path = '/etc/spinning-payload-exfiltrate';
   rc.network.sinkholeLog[1].host = 'recolector.example.com';
   const summary = outcome.buildSummary(rc);
-  const reply = 'Rules (a) and (d) fired: spinning recolector exfiltrate and kept wobbling.';
+  const reply = 'Rules (a) and (d) fired: spinning recolector exfiltrate while wobbling.';
   const toks = outcome.retryTokens(reply, 'vocabulary', rc, summary);
   assert.deepEqual(toks, ['wobbling'], 'spinning, recolector and exfiltrate occur in package strings, so they are dropped');
   // tokens must match ^[a-z]{1,24}$ and come from the reply itself
