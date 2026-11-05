@@ -97,6 +97,10 @@ test('E2c (v): a failed, timed-out, thrown or hanging call gives the template', 
     [async () => ({ status: 'http-error', httpStatus: 500 }), 'call-failed'],
     [async () => { throw new Error('boom'); }, 'call-failed'],
     [() => new Promise(() => {}), 'timeout'],
+    [async () => undefined, 'call-failed'],
+    [async () => null, 'call-failed'],
+    [async () => 'ok', 'call-failed'],
+    [async () => ({ status: 'ok', content: 42 }), 'empty'],
   ];
   for (const [send, reason] of cases) {
     const oe = await outcome.explain({ receipt: DNI, send, cfg: ON, timeoutMs: 50 });

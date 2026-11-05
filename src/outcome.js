@@ -350,9 +350,10 @@ async function explain({ receipt, send, cfg, timeoutMs = OUTCOME_TIMEOUT_MS }) {
   } catch (_) {
     r = { status: 'failed' };
   }
+  if (!r || typeof r !== 'object') r = { status: 'failed' }; // a transport resolving to nothing is a failure
   const attempt = { purpose: 'outcome', model: cfg.model, status: r.status, latencyMs: r.latencyMs ?? (Date.now() - t0), httpStatus: r.httpStatus || null };
   if (r.status !== 'ok') return fallback(r.status === 'timeout' ? 'timeout' : 'call-failed', { attempt }); // (v)
-  const text = String(r.content || '').trim();
+  const text = typeof r.content === 'string' ? r.content.trim() : ''; // non-string content is no reply
   const g = guard(text, { verdict: receipt.verdict, firedRules });
   if (!g.ok) return fallback(g.reason, { attempt });
   return { status: 'done', source: `model ${r.model || cfg.model}`, text, note: NOTE, guard: { accepted: true, reason: null }, attempt };
