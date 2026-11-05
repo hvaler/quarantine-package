@@ -17,6 +17,9 @@ Environment=QP_WEB_TRUSTED_PROXIES=127.0.0.1
 Environment=QP_RUN_PREFIX=qp
 Environment=QP_RECEIPTS_DIR=/var/lib/quarantine-package/receipts
 Environment=QP_WEB_STATE_FILE=/var/lib/quarantine-package/web-state.json
+# S7: origin for absolute links in /r/<id>.md and /api/receipts/<id>.sarif (plain origin, no path).
+# Without it the links in those exports are relative.
+# Environment=QP_PUBLIC_URL=https://<your-dns-name>
 # The model key only: a root-owned 0600 file, never a command line
 EnvironmentFile=/etc/quarantine-package/env
 ExecStart=/usr/bin/node src/web/server.js
