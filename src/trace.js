@@ -406,6 +406,11 @@ function analyse(text, opts = {}) {
     if (!made.has(to) && !links.has(to)) made.set(to, 'unknown');
     if (exchange && !made.has(from) && !links.has(from)) made.set(from, 'unknown');
   };
+  const copyTree = (from, to) => {
+    for (const [k, v] of [...links]) if (under(k, from)) links.set(to + k.slice(from.length), v);
+    for (const [k, v] of [...made]) if (under(k, from)) made.set(to + k.slice(from.length), v);
+    if (!made.has(to) && !links.has(to)) made.set(to, 'unknown');
+  };
   // May cur be a link the tracer does not know? Only in a writable mount.
   const maybeUntrackedLink = (cur) => {
     if (!inWritable(cur)) return false;
@@ -741,7 +746,7 @@ function analyse(text, opts = {}) {
         const blocked = c.ret === -1;
         // Security review: flags are read from the arguments with quoted strings
         // blanked, so a path containing a flag name cannot flip a decision.
-        const fa = c.args.replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?/g, '""');
+        const fa = c.args.replace(/"(?:[^"\\]|\\.)*"(?:\.\.\.)?/g, '""').replace(/<[^>]*>/g, '<>');
         // An unknown outcome (killed mid-call, unfinished at the end) may have applied.
         const uncertain = c.ret === null;
         const push = (type, r, extra = {}) => { if (!r.sink) events.push({ ...base, type, path: r.path, rawPath: r.raw, unresolved: r.path === null, blocked, ...extra }); };
@@ -774,8 +779,11 @@ function analyse(text, opts = {}) {
           push('fs-write', to);
           push('fs-write', from);
           // P2: a rename MOVES every link (and made-entry) at or under from to to.
-          if (uncertain) untrackedLinks = true;
-          else if (!blocked) {
+          if (uncertain) {
+            // Both outcomes are possible: keep the entries at from and copy them to to.
+            untrackedLinks = true;
+            if (from.path && to.path) copyTree(from.path, to.path);
+          } else if (!blocked) {
             if (from.path && to.path && (c.name === 'renameat2' || !/RENAME_EXCHANGE/.test(fa))) moveTree(from.path, to.path, c.name === 'renameat2' && /RENAME_EXCHANGE/.test(fa));
             else untrackedLinks = true;
           }
@@ -785,8 +793,11 @@ function analyse(text, opts = {}) {
           push('fs-write', at(0));
           // P2: link() does not follow a symlink (unless linkat AT_SYMLINK_FOLLOW):
           // the new name is the same symlink.
-          if (uncertain) untrackedLinks = true;
-          else if (!blocked) {
+          if (uncertain) {
+            untrackedLinks = true;
+            const old = nofollow(0);
+            if (old.path && nw.path && links.has(old.path)) links.set(nw.path, links.get(old.path));
+          } else if (!blocked) {
             const old = nofollow(0);
             if (!old.path || !nw.path) untrackedLinks = true;
             else if (!/AT_SYMLINK_FOLLOW/.test(fa) && links.has(old.path)) { links.set(nw.path, links.get(old.path)); made.set(nw.path, 'link'); }
@@ -804,7 +815,7 @@ function analyse(text, opts = {}) {
           const tr = stored ? walk(p, stored, '/') : { path: null };
           const target = { path: tr.sink ? null : tr.path, raw };
           push('fs-link-target', target);
-          if (c.ret === 0 && link.path && stored) { links.set(link.path, stored); made.set(link.path, 'link'); }
+          if ((c.ret === 0 || uncertain) && link.path && stored) { if (uncertain) untrackedLinks = true; links.set(link.path, stored); made.set(link.path, 'link'); }
           else if (!blocked) untrackedLinks = true; // a link exists at a path we cannot name, or may (P2)
         } else if (/^(access|faccessat2?|newfstatat|statx|stat|lstat)$/.test(c.name)) {
           // fstat-style calls on an fd ("" with AT_EMPTY_PATH) are not path accesses.

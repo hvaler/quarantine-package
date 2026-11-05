@@ -233,3 +233,12 @@ Directories made by `mkdir` stay resolvable, so ordinary task trees are not over
 
 1. **Flag tests in the file branches ignore quoted strings.** They read a copy of the arguments with every quoted string blanked, so a path such as `/tmp/AT_SYMLINK_NOFOLLOW` cannot flip follow, nofollow, exchange or write decisions. `RENAME_EXCHANGE` counts only for `renameat2`.
 2. **An unknown outcome counts as uncertain.** A rename, link, unlink, rmdir or symlink killed mid-call (`= ?`) or unfinished at the end is not treated as a success. It sets the untracked-links flag, so `..` in the writable mounts becomes unresolved.
+
+### Automated security review of 845d9eed (addressed)
+
+1. **Flag text from `-y` annotations is blanked too.** `<…>` annotations are removed along with quoted strings, so a cwd such as `/work/AT_SYMLINK_NOFOLLOW` cannot flip a flag.
+2. **An uncertain rename, link or symlink is assumed to have happened** (and also not to have happened):
+   - a rename copies the entries to the new name and keeps them at the old name;
+   - a link copies a known symlink to the new name;
+   - a symlink is recorded.
+   - Each of these also sets the untracked-links flag.

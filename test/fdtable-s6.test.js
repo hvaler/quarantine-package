@@ -262,3 +262,10 @@ test('security review: flag names inside a quoted path do not change a decision;
   const v = run([`symlink("${DEEP}", "/tmp/k1") = 0`, 'rename("/tmp/k1", "/tmp/k2") = ?', 'mkdir("/tmp/k2/../../../../work/q", 0777) = -1 EROFS (Read-only file system)']);
   assert.ok(ids(v.d).has('a'));
 });
+
+test('security review 3: an uncertain rename keeps the link at both names; flag text in a <cwd> annotation is ignored', () => {
+  const r = run(['symlink("/home/qp/.ssh", "/tmp/u1") = 0', 'rename("/tmp/u1", "/tmp/u2") = ?', 'openat(AT_FDCWD</work>, "/tmp/u2/id_rsa", O_RDONLY) = -1 ENOENT (No such file or directory)']);
+  assert.ok(ids(r.d).has('b'));
+  const s = run(['symlink("/home/qp/.ssh", "/tmp/s1") = 0', 'newfstatat(AT_FDCWD</work/AT_SYMLINK_NOFOLLOW>, "/tmp/s1", 0x7ffd0000, 0) = 0']);
+  assert.ok(ids(s.d).has('b'));
+});
