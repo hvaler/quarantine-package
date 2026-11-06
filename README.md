@@ -1,4 +1,27 @@
-# Quarantine Package
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/brand/banner-dark.png">
+    <img alt="Quarantine Package: run an npm dependency in a sealed, traced sandbox on Vultr before it runs on your machine" src="docs/media/brand/banner-light.png" width="100%">
+  </picture>
+</h1>
+
+<p align="center">
+  <img alt="Vultr Cloud Compute" src="https://img.shields.io/badge/Vultr-Cloud%20Compute-007BFC?style=flat-square&logo=vultr&logoColor=white">
+  <img alt="Vultr Serverless Inference" src="https://img.shields.io/badge/Vultr-Serverless%20Inference-007BFC?style=flat-square&logo=vultr&logoColor=white">
+  <img alt="Model mimo-v2.6-pro" src="https://img.shields.io/badge/model-mimo--v2.6--pro-007BFC?style=flat-square">
+  <br>
+  <img alt="Docker hardened runc" src="https://img.shields.io/badge/Docker-hardened%20runc-1A1C1D?style=flat-square&logo=docker&logoColor=white">
+  <img alt="strace 6.1" src="https://img.shields.io/badge/strace-6.1%20(%25file%20class)-1A1C1D?style=flat-square&logo=linux&logoColor=white">
+  <img alt="Ubuntu 24.04" src="https://img.shields.io/badge/Ubuntu-24.04-1A1C1D?style=flat-square&logo=ubuntu&logoColor=white">
+  <img alt="Caddy TLS" src="https://img.shields.io/badge/Caddy-TLS-1A1C1D?style=flat-square&logo=caddy&logoColor=white">
+  <img alt="Node.js 22" src="https://img.shields.io/badge/Node.js-22-1A1C1D?style=flat-square&logo=nodedotjs&logoColor=white">
+  <img alt="npm runtime deps 0" src="https://img.shields.io/badge/npm%20runtime%20deps-0-1A1C1D?style=flat-square&logo=npm&logoColor=white">
+  <br>
+  <img alt="SARIF 2.1.0" src="https://img.shields.io/badge/SARIF-2.1.0-2D6B68?style=flat-square">
+  <img alt="tests 274" src="https://img.shields.io/badge/tests-274%20(node%3Atest)-2D6B68?style=flat-square&logo=nodedotjs&logoColor=white">
+  <img alt="Built with Claude Code" src="https://img.shields.io/badge/built%20with-Claude%20Code-2D6B68?style=flat-square&logo=claude&logoColor=white">
+  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-2D6B68?style=flat-square">
+</p>
 
 Before you add an npm dependency, type its name and version. Quarantine Package downloads it **outside** a
 sandbox without running any script. It then installs and loads it **inside** a disposable, hardened, traced
