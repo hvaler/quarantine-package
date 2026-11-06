@@ -12,8 +12,13 @@ model: fixed rules compute it from the kernel trace and the sinkhole log.
 
 **Live demo:** https://qp.hugovaler.com (one Vultr VM). Example receipts:
 [express → install](https://qp.hugovaler.com/r/514e574600) ·
+[fastify → install](https://qp.hugovaler.com/r/d6fbf70332) ·
 [network demo → review](https://qp.hugovaler.com/r/d5af19b228) ·
-[hostile package → do-not-install](https://qp.hugovaler.com/r/8b42cfb93e).
+[hostile package → do-not-install](https://qp.hugovaler.com/r/8b42cfb93e) ·
+[fork bomb](https://qp.hugovaler.com/r/93b65a40ad) and [infinite loop](https://qp.hugovaler.com/r/7480a24604) → do-not-install.
+With the model's "What happened": [express](https://qp.hugovaler.com/r/42f7249f48). Every receipt also exports as
+Markdown ([example](https://qp.hugovaler.com/r/8b42cfb93e.md)), JSON and
+[SARIF](https://qp.hugovaler.com/api/receipts/8b42cfb93e.sarif) ([Use the result](#use-the-result)).
 
 ## The use case, and how the agent executes real tasks
 
@@ -32,7 +37,8 @@ For each request, the system does the following:
    with `docker kill`.
    - It runs `npm rebuild --offline` (the install scripts), then the product's own `require()` of the package,
      then the model's harness.
-   - A separate tracer container follows every syscall with `strace`.
+   - A separate tracer container follows the package's file, process, network and fd-table syscalls with
+     `strace` (the full set and why: [`docs/TRACE-SET.md`](docs/TRACE-SET.md)).
    - The sandbox's only network is an internal Docker network whose every route and DNS answer ends at the
      sinkhole. That covers TCP by name and by direct IP, UDP and DNS.
 4. **Decide.** Fixed rules turn the observations into a verdict, for example a write outside the allowed
@@ -126,7 +132,7 @@ deployment on 4 Nov 2026:
 The product has no npm runtime dependencies.
 
 ```sh
-git clone <repo-url> quarantine-package && cd quarantine-package
+git clone https://github.com/hvaler/quarantine-package && cd quarantine-package
 npm run build:images                          # qp-sandbox / qp-sinkhole images (base images pinned by digest)
 npm test                                      # unit tests (no Docker, fake model)
 node src/cli.js analyse express@4.21.2        # registry package  -> install
@@ -303,7 +309,7 @@ Every receipt lists these in `knownLimitations`.
 | L-17 | Large dependency trees (over 50 MB unpacked or 300 packages, for example `@stellar/stellar-sdk`) are aborted at download with no verdict. The limits fit a 4 GB VM and are configurable. |
 | L-18 | The receipt page shows at most 300 observations and 200 sinkhole entries. When it cuts a list, it says "showing N of M" and links to the full receipt JSON at `/api/receipts/<id>`. |
 | L-19 | **Fixed** (S6, commits e3edf74..265f148; the fix is complete at 265f148, e3edf74 alone was rejected in review). The tracer missed file syscalls outside its hand-written list (`utimensat`, `fchownat`, `readlink`, `inotify_add_watch` and others), so a package whose only forbidden acts used them got `install`. The traced set is now strace 6.1's whole `%file` class (minus `getcwd`) plus the fd-only file calls, every traced call has a mapping or fails closed, and a unit test checks both against an independent reference list ([`docs/TRACE-SET.md`](docs/TRACE-SET.md)). |
-| L-20 | The "What happened" guard is lexical: fixed English phrase lists, rule-letter forms and a descriptive vocabulary allowlist. It fails closed, so a correct reply can be replaced by the code template (any word outside the vocabulary is enough). S8 makes the model fit it: the prompt lists the rules and the vocabulary, and there is one retry; before handoff, the model's text was shown in 9 of 11 real-endpoint runs (4 of 6 `explain()` calls on the stored demo receipts, 5 of 5 CLI analyses; the auditor's 12-run acceptance gives the release figure) ([vocabulary evidence](docs/L-20-vocabulary.md)). A reply that passes can still be odd or incomplete; it is labelled informational and never affects the verdict, the Markdown or the SARIF. If the CLI is interrupted during the call, the receipt stays `pending`. |
+| L-20 | The "What happened" guard is lexical: fixed English phrase lists, rule-letter forms and a descriptive vocabulary allowlist. It fails closed, so a correct reply can be replaced by the code template (any word outside the vocabulary is enough). S8 makes the model fit it: the prompt lists the rules and the vocabulary, and there is one retry; before handoff, the model's text was shown in 9 of 11 real-endpoint runs (4 of 6 `explain()` calls on the stored demo receipts, 5 of 5 CLI analyses). Release figure (auditor's S8 acceptance, six demos twice each): the model's text was shown in 10 of 12 runs ([vocabulary evidence](docs/L-20-vocabulary.md)). A reply that passes can still be odd or incomplete; it is labelled informational and never affects the verdict, the Markdown or the SARIF. If the CLI is interrupted during the call, the receipt stays `pending`. |
 | H-1 | **Done.** The `QP_ROLE` role label is checked as defence in depth: it is honoured only for the real product entry point started by the stage script. The verdict takes process roles from the kernel trace in any case. |
 
 Further notes are in each receipt's `knownLimitations` and in [`docs/CONTRACT.md`](docs/CONTRACT.md).
@@ -318,6 +324,15 @@ independent auditor reproduced its criteria on a clean clone.
 The product's own agent, the model step that predicts behaviour and writes the harness, makes all of its LLM
 calls through Vultr Serverless Inference, and through nothing else. The CLI and the web app call no other model
 provider.
+
+## Releases
+
+| Tag | What it added |
+|---|---|
+| `v1.0-entrega` | The product: sandbox, tracer, sinkhole, rules, receipts, web app, six demos |
+| `v1.1-entrega` | L-19 fixed (traced set widened to strace's `%file` class), L-18 truncation note |
+| `v1.2-entrega` | Markdown, JSON and SARIF exports, CLI exit codes, "What happened" with its guard, inert fixtures |
+| `v1.3-entrega` | "What happened" shown on most real runs (prompt states the guard's rules, one retry) |
 
 ## License
 
