@@ -23,6 +23,8 @@
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-2D6B68?style=flat-square">
 </p>
 
+<p align="center"><b>English</b> · <a href="README.es.md">Español</a></p>
+
 Before you add an npm dependency, type its name and version. Quarantine Package downloads it **outside** a
 sandbox without running any script. It then installs and loads it **inside** a disposable, hardened, traced
 sandbox whose only network ends at a logging sinkhole. You get a public receipt with every attempt it observed
