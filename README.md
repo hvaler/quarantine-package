@@ -33,7 +33,7 @@ A model on **Vultr Serverless Inference** reads the package first. It predicts w
 main API. The receipt puts that prediction next to what was really observed. The verdict never depends on the
 model: fixed rules compute it from the kernel trace and the sinkhole log.
 
-**Demo video (3:16):** https://youtu.be/KqVSzqyXf-o · **Live demo:** https://qp.hugovaler.com (one Vultr VM). Example receipts:
+**Demo video (3:16):** https://youtu.be/KqVSzqyXf-o · **Slides:** [PDF](docs/media/submission/quarantine-package-slides.pdf) · **Live demo:** https://qp.hugovaler.com (one Vultr VM). Example receipts:
 [express → install](https://qp.hugovaler.com/r/514e574600) ·
 [fastify → install](https://qp.hugovaler.com/r/d6fbf70332) ·
 [network demo → review](https://qp.hugovaler.com/r/d5af19b228) ·
